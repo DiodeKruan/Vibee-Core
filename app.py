@@ -198,6 +198,109 @@ def inject_custom_css():
             border: 1px solid rgba(255, 255, 255, 0.08);
             border-radius: 8px;
         }
+        
+        /* Floating chat wrapper */
+        .chat-wrapper {
+            background: linear-gradient(180deg, rgba(15, 15, 20, 0.96), rgba(11, 11, 16, 0.96));
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 16px;
+            padding: 12px;
+            box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+            color: #e2e8f0;
+        }
+        
+        .chat-wrapper .chat-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        
+        .chat-wrapper .chat-title {
+            font-weight: 700;
+            font-size: 14px;
+            color: #f97316;
+            margin: 0;
+        }
+        
+        .chat-wrapper .chat-subtitle {
+            font-size: 11px;
+            color: #94a3b8;
+            margin: 0;
+        }
+        
+        .chat-wrapper .chat-history {
+            max-height: 280px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding: 2px 4px 2px 0;
+            margin: 6px 0 10px;
+        }
+        
+        .chat-wrapper .chat-bubble {
+            padding: 10px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            line-height: 1.4;
+            width: fit-content;
+            max-width: 100%;
+            border: 1px solid transparent;
+        }
+        
+        .chat-wrapper .chat-bubble.user {
+            margin-left: auto;
+            background: linear-gradient(135deg, #f97316, #f59e0b);
+            color: #0b0b10;
+            border-color: rgba(0, 0, 0, 0.12);
+        }
+        
+        .chat-wrapper .chat-bubble.assistant {
+            margin-right: auto;
+            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(255, 255, 255, 0.08);
+            color: #e2e8f0;
+        }
+        
+        .chat-wrapper form {
+            margin-top: 6px;
+        }
+        
+        .chat-wrapper [data-testid="stTextInput"] > div > div {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+        }
+        
+        .chat-wrapper .stButton > button {
+            height: 38px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, #f97316, #f59e0b);
+            color: #0b0b10;
+            font-weight: 700;
+            border: none;
+            box-shadow: 0 10px 20px rgba(249, 115, 22, 0.35);
+        }
+        
+        [data-testid="stVerticalBlock"] {
+            display: flex;
+        }
+
+        [data-testid="InputInstructions"] {
+            display: none !important;
+        }
+        
+        [data-testid="stForm"] > [data-testid="stVerticalBlockBorderWrapper"] {
+            padding: 16px !important;
+            background: linear-gradient(145deg, rgba(10, 10, 15, 0.95), rgba(15, 15, 22, 0.95));
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 0 0 14px 14px;
+            border-top: none !important;
+            overflow: hidden;
+            backdrop-filter: blur(16px);
+        }
 
         /* Scrollbar */
         ::-webkit-scrollbar {
@@ -394,7 +497,6 @@ def main():
         layer=layer_type,
     )
     
-    # Render floating chatbox component (HTML/CSS)
     render_chatbox()
     
 
