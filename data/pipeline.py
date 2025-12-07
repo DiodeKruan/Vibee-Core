@@ -1,0 +1,314 @@
+"""Data pipeline for cleaning and transforming Traffy Fondue data."""
+
+from typing import List, Optional
+
+import numpy as np
+import pandas as pd
+
+
+# Example ticket text to filter out
+EXAMPLE_TICKET_TEXT = "ตัวอย่างการแจ้ง รบกวนมาเก็บขยะด้วยครับ"
+
+# Content columns for duplicate detection (exclude metadata)
+CONTENT_COLUMNS = ["ticket_id", "type", "description", "lat", "lon"]
+
+# Outlier thresholds
+MAX_ORGANIZATIONS = 10
+MAX_TYPES = 5
+
+
+def drop_duplicates(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Drop duplicate rows based on content columns.
+    
+    Args:
+        df: Input DataFrame
+        
+    Returns:
+        DataFrame with duplicates removed
+    """
+    existing_cols = [col for col in CONTENT_COLUMNS if col in df.columns]
+    if not existing_cols:
+        return df
+    return df.drop_duplicates(subset=existing_cols, keep="first")
+
+
+def drop_null_ticket_id(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Drop rows where ticket_id is null.
+    
+    Args:
+        df: Input DataFrame
+        
+    Returns:
+        DataFrame with null ticket_id rows removed
+    """
+    if "ticket_id" not in df.columns:
+        return df
+    return df.dropna(subset=["ticket_id"])
+
+
+def drop_example_tickets(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Drop example/test tickets containing specific Thai text.
+    
+    Args:
+        df: Input DataFrame
+        
+    Returns:
+        DataFrame with example tickets removed
+    """
+    if "description" not in df.columns:
+        return df
+    
+    mask = df["description"].fillna("").str.contains(EXAMPLE_TICKET_TEXT, regex=False)
+    return df[~mask]
+
+
+def drop_invalid_coordinates(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Drop rows with invalid coordinates (0.0, 0.0).
+    
+    Args:
+        df: Input DataFrame
+        
+    Returns:
+        DataFrame with invalid coordinates removed
+    """
+    if "lat" not in df.columns or "lon" not in df.columns:
+        return df
+    
+    # Remove rows where both lat and lon are exactly 0.0
+    mask = (df["lat"] == 0.0) & (df["lon"] == 0.0)
+    return df[~mask]
+
+
+def one_hot_encode_types(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    One-hot encode the type column (comma-separated values).
+    Creates type_* columns and n_types count.
+    
+    Args:
+        df: Input DataFrame with 'type' column (comma-separated string)
+        
+    Returns:
+        DataFrame with type_* columns and n_types added
+    """
+    if "type" not in df.columns:
+        df["n_types"] = 0
+        return df
+    
+    # Split comma-separated types and get unique types
+    def split_types(x):
+        if pd.isna(x) or x == "":
+            return []
+        return [t.strip() for t in str(x).split(",") if t.strip()]
+    
+    df = df.copy()
+    type_lists = df["type"].apply(split_types)
+    
+    # Count types per row
+    df["n_types"] = type_lists.apply(len)
+    
+    # Get all unique types
+    all_types = set()
+    for types in type_lists:
+        all_types.update(types)
+    
+    # Create one-hot encoded columns
+    for type_name in sorted(all_types):
+        col_name = f"type_{type_name}"
+        df[col_name] = type_lists.apply(lambda x: 1 if type_name in x else 0)
+    
+    return df
+
+
+def add_n_organizations(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add n_organizations column counting organizations per ticket.
+    
+    Args:
+        df: Input DataFrame with 'org' column (comma-separated string)
+        
+    Returns:
+        DataFrame with n_organizations column added
+    """
+    if "org" not in df.columns:
+        df["n_organizations"] = 0
+        return df
+    
+    df = df.copy()
+    
+    def count_orgs(x):
+        if pd.isna(x) or x == "":
+            return 0
+        return len([o.strip() for o in str(x).split(",") if o.strip()])
+    
+    df["n_organizations"] = df["org"].apply(count_orgs)
+    return df
+
+
+def remove_outliers(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Remove outlier rows based on n_organizations and n_types.
+    
+    Args:
+        df: Input DataFrame with n_organizations and n_types columns
+        
+    Returns:
+        DataFrame with outliers removed
+    """
+    df = df.copy()
+    
+    # Ensure columns exist with defaults
+    if "n_organizations" not in df.columns:
+        df["n_organizations"] = 0
+    if "n_types" not in df.columns:
+        df["n_types"] = 0
+    
+    # Remove outliers: n_organizations >= 10 OR n_types > 5
+    mask = (df["n_organizations"] >= MAX_ORGANIZATIONS) | (df["n_types"] > MAX_TYPES)
+    return df[~mask]
+
+
+def calculate_duration(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculate duration_hour from last_activity - timestamp.
+    
+    Args:
+        df: Input DataFrame with timestamp and last_activity columns
+        
+    Returns:
+        DataFrame with duration_hour column added
+    """
+    df = df.copy()
+    
+    if "timestamp" not in df.columns or "last_activity" not in df.columns:
+        df["duration_hour"] = np.nan
+        return df
+    
+    # Convert to datetime if needed
+    timestamp = pd.to_datetime(df["timestamp"], errors="coerce")
+    last_activity = pd.to_datetime(df["last_activity"], errors="coerce")
+    
+    # Calculate duration in hours
+    duration = (last_activity - timestamp).dt.total_seconds() / 3600
+    df["duration_hour"] = duration
+    
+    return df
+
+
+def process_traffy_data(df: pd.DataFrame, verbose: bool = False) -> pd.DataFrame:
+    """
+    Process Traffy Fondue data through the complete pipeline.
+    
+    Pipeline steps:
+    1. Drop duplicates based on content columns
+    2. Drop rows with null ticket_id
+    3. Drop example tickets
+    4. Drop invalid coordinates (0.0, 0.0)
+    5. One-hot encode type → type_* columns + n_types
+    6. Add n_organizations count
+    7. Remove outliers (n_organizations >= 10 OR n_types > 5)
+    8. Calculate duration_hour
+    
+    Args:
+        df: Raw DataFrame from fetch_traffy_data()
+        verbose: If True, print stats after each step
+        
+    Returns:
+        Cleaned and transformed DataFrame
+    """
+    if df.empty:
+        return df
+    
+    initial_count = len(df)
+    
+    # Step 1: Drop duplicates
+    df = drop_duplicates(df)
+    if verbose:
+        print(f"After drop_duplicates: {len(df)} rows (removed {initial_count - len(df)})")
+    
+    # Step 2: Drop null ticket_id
+    count_before = len(df)
+    df = drop_null_ticket_id(df)
+    if verbose:
+        print(f"After drop_null_ticket_id: {len(df)} rows (removed {count_before - len(df)})")
+    
+    # Step 3: Drop example tickets
+    count_before = len(df)
+    df = drop_example_tickets(df)
+    if verbose:
+        print(f"After drop_example_tickets: {len(df)} rows (removed {count_before - len(df)})")
+    
+    # Step 4: Drop invalid coordinates
+    count_before = len(df)
+    df = drop_invalid_coordinates(df)
+    if verbose:
+        print(f"After drop_invalid_coordinates: {len(df)} rows (removed {count_before - len(df)})")
+    
+    # Step 5: One-hot encode types
+    df = one_hot_encode_types(df)
+    if verbose:
+        type_cols = [c for c in df.columns if c.startswith("type_")]
+        print(f"After one_hot_encode_types: {len(type_cols)} type columns created")
+    
+    # Step 6: Add n_organizations
+    df = add_n_organizations(df)
+    if verbose:
+        print(f"After add_n_organizations: mean={df['n_organizations'].mean():.2f}")
+    
+    # Step 7: Remove outliers
+    count_before = len(df)
+    df = remove_outliers(df)
+    if verbose:
+        print(f"After remove_outliers: {len(df)} rows (removed {count_before - len(df)})")
+    
+    # Step 8: Calculate duration
+    df = calculate_duration(df)
+    if verbose:
+        valid_duration = df["duration_hour"].notna().sum()
+        print(f"After calculate_duration: {valid_duration} rows with valid duration")
+    
+    # Reset index
+    df = df.reset_index(drop=True)
+    
+    if verbose:
+        print(f"Pipeline complete: {initial_count} → {len(df)} rows")
+    
+    return df
+
+
+def get_pipeline_stats(df_before: pd.DataFrame, df_after: pd.DataFrame) -> dict:
+    """
+    Get statistics about the pipeline transformation.
+    
+    Args:
+        df_before: DataFrame before pipeline
+        df_after: DataFrame after pipeline
+        
+    Returns:
+        Dictionary with pipeline statistics
+    """
+    stats = {
+        "rows_before": len(df_before),
+        "rows_after": len(df_after),
+        "rows_removed": len(df_before) - len(df_after),
+        "removal_rate": (len(df_before) - len(df_after)) / max(len(df_before), 1) * 100,
+    }
+    
+    if "n_types" in df_after.columns:
+        stats["unique_types"] = len([c for c in df_after.columns if c.startswith("type_")])
+        stats["avg_types_per_ticket"] = df_after["n_types"].mean()
+    
+    if "n_organizations" in df_after.columns:
+        stats["avg_orgs_per_ticket"] = df_after["n_organizations"].mean()
+    
+    if "duration_hour" in df_after.columns:
+        valid_duration = df_after["duration_hour"].dropna()
+        if len(valid_duration) > 0:
+            stats["avg_duration_hours"] = valid_duration.mean()
+            stats["median_duration_hours"] = valid_duration.median()
+    
+    return stats
+

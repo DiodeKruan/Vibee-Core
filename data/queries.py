@@ -232,3 +232,103 @@ def get_date_range() -> Tuple[Optional[date], Optional[date]]:
     except Exception:
         return None, None
 
+
+@st.cache_data(ttl=settings.cache_ttl_seconds)
+def fetch_traffy_data(
+    categories: Optional[List[str]] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    limit: int = 100000,
+) -> pd.DataFrame:
+    """
+    Fetch traffy_data from the database with PostGIS geometry extraction.
+
+    Args:
+        categories: List of category types to filter
+        date_from: Start date filter
+        date_to: End date filter
+        limit: Maximum number of records to return
+
+    Returns:
+        DataFrame with columns including org and last_activity for pipeline processing
+    """
+    conditions = ["location IS NOT NULL"]
+    params: List[Any] = []
+
+    # Category filter (using 'type' column)
+    if categories:
+        placeholders = ",".join(["%s"] * len(categories))
+        conditions.append(f"type IN ({placeholders})")
+        params.extend(categories)
+
+    # Date filters
+    if date_from:
+        conditions.append("timestamp >= %s")
+        params.append(date_from)
+
+    if date_to:
+        conditions.append("timestamp <= %s")
+        params.append(date_to)
+
+    where_clause = " AND ".join(conditions)
+
+    query = f"""
+        SELECT 
+            id,
+            ticket_id,
+            ST_Y(location::geometry) as lat,
+            ST_X(location::geometry) as lon,
+            type,
+            comment as description,
+            state as status,
+            timestamp,
+            last_activity,
+            organization as org,
+            district,
+            province,
+            address
+        FROM traffy_tickets
+        WHERE {where_clause}
+        ORDER BY timestamp DESC
+        LIMIT %s
+    """
+    params.append(limit)
+
+    # Define column names for the DataFrame
+    columns = [
+        "id", "ticket_id", "lat", "lon", "type", "description",
+        "status", "timestamp", "last_activity", "org",
+        "district", "province", "address"
+    ]
+
+    try:
+        with get_cursor() as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+
+            if not rows:
+                return pd.DataFrame(columns=columns)
+
+            return pd.DataFrame(rows)
+    except Exception as e:
+        st.error(f"Database error: {e}")
+        return pd.DataFrame(columns=columns)
+
+
+def get_traffy_date_range() -> Tuple[Optional[date], Optional[date]]:
+    """Get the min and max dates in the traffy_data dataset."""
+    query = """
+        SELECT MIN(timestamp)::date as min_date, MAX(timestamp)::date as max_date
+        FROM traffy_data
+    """
+
+    try:
+        with get_cursor() as cur:
+            cur.execute(query)
+            row = cur.fetchone()
+            if row:
+                return row["min_date"], row["max_date"]
+            return None, None
+    except Exception:
+        return None, None
+

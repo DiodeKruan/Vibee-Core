@@ -1,11 +1,18 @@
 """Sidebar component with parameter controls and filters."""
 
-from datetime import date, timedelta
-from typing import Dict, List, Optional, Tuple
+from datetime import date
+from typing import Dict
 
 import streamlit as st
 
 from config.settings import settings
+
+
+# Default data fetch settings
+DEFAULT_DATA_DATE_FROM = date(2023, 1, 1)
+DEFAULT_DATA_DATE_TO = date(2025, 12, 31)
+DEFAULT_MAX_RECORDS = 100000
+MAX_RECORDS_LIMIT = 500000
 
 
 def init_sidebar_state() -> None:
@@ -13,12 +20,15 @@ def init_sidebar_state() -> None:
     defaults = {
         "layer_type": settings.map.default_layer,
         "selected_categories": settings.categories.categories.copy(),
-        "date_from": date.today() - timedelta(days=30),
-        "date_to": date.today(),
         "point_radius": settings.map.default_point_radius,
         "opacity": settings.map.default_opacity,
         "elevation_scale": settings.map.default_elevation_scale,
         "hexagon_radius": settings.map.hexagon_radius,
+        # Data fetch settings (also used for filtering)
+        "data_date_from": DEFAULT_DATA_DATE_FROM,
+        "data_date_to": DEFAULT_DATA_DATE_TO,
+        "max_records": DEFAULT_MAX_RECORDS,
+        "reload_data": False,
     }
 
     for key, value in defaults.items():
@@ -61,6 +71,54 @@ def render_sidebar() -> Dict:
             unsafe_allow_html=True,
         )
 
+        # Data Settings Section
+        st.markdown("##### Data Settings")
+        
+        # Data date range
+        col1, col2 = st.columns(2)
+        with col1:
+            data_date_from = st.date_input(
+                "Data From",
+                value=st.session_state.data_date_from,
+                key="data_date_from_input",
+                min_value=date(2015, 1, 1),
+                max_value=date(2025, 12, 31),
+            )
+            st.session_state.data_date_from = data_date_from
+        with col2:
+            data_date_to = st.date_input(
+                "Data To",
+                value=st.session_state.data_date_to,
+                key="data_date_to_input",
+                min_value=date(2015, 1, 1),
+                max_value=date(2025, 12, 31),
+            )
+            st.session_state.data_date_to = data_date_to
+        
+        # Max records slider
+        max_records = st.slider(
+            "Max Records",
+            min_value=10000,
+            max_value=MAX_RECORDS_LIMIT,
+            value=st.session_state.max_records,
+            step=10000,
+            key="max_records_slider",
+            format="%d",
+        )
+        st.session_state.max_records = max_records
+        
+        # Reload data button
+        if st.button("🔄 Reload Data", use_container_width=True, key="reload_data_btn"):
+            st.session_state.reload_data = True
+            # Clear cached data to force reload
+            if "traffy_data" in st.session_state:
+                del st.session_state.traffy_data
+            if "processed_data" in st.session_state:
+                del st.session_state.processed_data
+            st.rerun()
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+
         # Layer Type Selection
         st.markdown("##### Visualization Layer")
         layer_options = {
@@ -80,26 +138,6 @@ def render_sidebar() -> Dict:
             label_visibility="collapsed",
         )
         st.session_state.layer_type = layer_type
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # Date Range
-        st.markdown("##### Date Range")
-        col1, col2 = st.columns(2)
-        with col1:
-            date_from = st.date_input(
-                "From",
-                value=st.session_state.date_from,
-                key="date_from_input",
-            )
-            st.session_state.date_from = date_from
-        with col2:
-            date_to = st.date_input(
-                "To",
-                value=st.session_state.date_to,
-                key="date_to_input",
-            )
-            st.session_state.date_to = date_to
 
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -207,8 +245,12 @@ def render_sidebar() -> Dict:
     params = {
         "layer_type": st.session_state.layer_type,
         "categories": st.session_state.selected_categories,
-        "date_from": st.session_state.date_from,
-        "date_to": st.session_state.date_to,
+        # Use data date range for both fetch and filter
+        "date_from": st.session_state.data_date_from,
+        "date_to": st.session_state.data_date_to,
+        "data_date_from": st.session_state.data_date_from,
+        "data_date_to": st.session_state.data_date_to,
+        "max_records": st.session_state.max_records,
         "radius": st.session_state.point_radius,
         "opacity": st.session_state.opacity,
         "elevation_scale": st.session_state.elevation_scale,
@@ -242,8 +284,12 @@ def get_current_params() -> Dict:
     return {
         "layer_type": st.session_state.layer_type,
         "categories": st.session_state.selected_categories,
-        "date_from": st.session_state.date_from,
-        "date_to": st.session_state.date_to,
+        # Use data date range for both fetch and filter
+        "date_from": st.session_state.data_date_from,
+        "date_to": st.session_state.data_date_to,
+        "data_date_from": st.session_state.data_date_from,
+        "data_date_to": st.session_state.data_date_to,
+        "max_records": st.session_state.max_records,
         "radius": st.session_state.point_radius,
         "opacity": st.session_state.opacity,
         "elevation_scale": st.session_state.elevation_scale,

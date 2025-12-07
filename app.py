@@ -4,7 +4,7 @@ Bangkok Urban Report Analytics with PyDeck Map
 """
 
 import sys
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +23,8 @@ from visualization.layers import create_layer
 from mcp.ui_mcp import ui_mcp
 from mcp.data_mcp import data_mcp
 from utils.sampling import sample_data, aggregate_to_hexagons
+from data.queries import fetch_traffy_data
+from data.pipeline import process_traffy_data
 
 # Page configuration - must be first Streamlit command
 st.set_page_config(
@@ -360,16 +362,14 @@ def generate_demo_data(n_points: int = 5000) -> pd.DataFrame:
 
 
 def filter_data(df: pd.DataFrame, params: dict) -> pd.DataFrame:
-    """Filter data based on sidebar parameters."""
+    """Filter data based on sidebar parameters (categories only, date filtering done at fetch)."""
     filtered = df.copy()
     
-    if params.get("categories"):
-        filtered = filtered[filtered["category"].isin(params["categories"])]
+    # Use 'category' column if present, otherwise try 'type'
+    category_col = "category" if "category" in filtered.columns else "type"
     
-    if params.get("date_from"):
-        filtered = filtered[pd.to_datetime(filtered["created_at"]).dt.date >= params["date_from"]]
-    if params.get("date_to"):
-        filtered = filtered[pd.to_datetime(filtered["created_at"]).dt.date <= params["date_to"]]
+    if params.get("categories") and category_col in filtered.columns:
+        filtered = filtered[filtered[category_col].isin(params["categories"])]
     
     return filtered
 
@@ -460,6 +460,49 @@ def render_floating_header(total: int, filtered: int, categories: int, layer: st
     )
 
 
+def load_data(date_from: date = None, date_to: date = None, limit: int = 100000) -> pd.DataFrame:
+    """
+    Load data from database with date range filtering, then process through pipeline.
+    Falls back to demo data on error.
+    
+    Args:
+        date_from: Start date for data fetch
+        date_to: End date for data fetch
+        limit: Maximum number of records to fetch
+        
+    Returns:
+        Processed DataFrame ready for visualization
+    """
+    try:
+        # Fetch raw data from database with date filtering
+        df = fetch_traffy_data(
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+        )
+        
+        if not df.empty:
+            # Process through the data pipeline
+            df = process_traffy_data(df)
+            
+            # Add 'category' column for compatibility with existing filter/visualization code
+            if "type" in df.columns and "category" not in df.columns:
+                df["category"] = df["type"]
+            
+            # Add 'created_at' column for compatibility
+            if "timestamp" in df.columns and "created_at" not in df.columns:
+                df["created_at"] = df["timestamp"]
+            
+            return df
+            
+    except Exception as e:
+        st.sidebar.warning(f"Database connection failed: {e}")
+    
+    # Fallback to demo data
+    st.sidebar.info("Using demo data")
+    return generate_demo_data(n_points=8000)
+
+
 def main():
     """Main application entry point."""
     # Inject CSS
@@ -469,11 +512,28 @@ def main():
     init_sidebar_state()
     params = render_sidebar()
     
-    # Load data
-    if "demo_data" not in st.session_state:
-        st.session_state.demo_data = generate_demo_data(n_points=8000)
+    # Get data fetch parameters from sidebar
+    data_date_from = params.get("data_date_from")
+    data_date_to = params.get("data_date_to")
+    max_records = params.get("max_records", 100000)
     
-    df = st.session_state.demo_data
+    # Load data from database (cached by Streamlit)
+    # Reload if data not in session state or if parameters changed
+    current_fetch_key = f"{data_date_from}_{data_date_to}_{max_records}"
+    
+    if (
+        "traffy_data" not in st.session_state
+        or st.session_state.get("fetch_key") != current_fetch_key
+    ):
+        with st.spinner("Loading and processing data..."):
+            st.session_state.traffy_data = load_data(
+                date_from=data_date_from,
+                date_to=data_date_to,
+                limit=max_records,
+            )
+            st.session_state.fetch_key = current_fetch_key
+    
+    df = st.session_state.traffy_data
     filtered_df = filter_data(df, params)
     
     # Get params
