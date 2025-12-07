@@ -1099,3 +1099,711 @@ def get_available_districts() -> List[Dict[str, Any]]:
       return [dict(row) for row in cur.fetchall()]
   except Exception as e:
     raise RuntimeError(f"District list query failed: {e}")
+
+
+# =============================================================================
+# Longdo Events Query Functions
+# =============================================================================
+
+# Valid dimensions for Longdo data
+LONGDO_VALID_DIMENSIONS = {
+    "type": "event_type",
+    "event_type": "event_type",
+    "posted_by": "posted_by",
+}
+
+
+def get_longdo_schema_info() -> Dict[str, Any]:
+  """
+  Get Longdo Events database schema information for AI introspection.
+
+  Returns:
+      Dictionary with table schema, available dimensions, and sample values
+  """
+  schema_info = {
+      "table": "longdo_events",
+      "description": "Real-time traffic and event reports from Longdo Traffic",
+      "columns": {
+          "id": {"type": "integer", "description": "Unique record ID"},
+          "event_id": {"type": "string", "description": "Longdo event reference ID"},
+          "event_type": {"type": "string", "description": "Event type (roadclosed, fire, trafficjam, etc.)"},
+          "title": {"type": "string", "description": "Event title"},
+          "description": {"type": "text", "description": "Event description"},
+          "posted_by": {"type": "string", "description": "User who posted the event"},
+          "start_time": {"type": "datetime", "description": "Event start time"},
+          "end_time": {"type": "datetime", "description": "Event end time (if applicable)"},
+          "location": {"type": "geometry", "description": "GPS coordinates (PostGIS point)"},
+      },
+      "queryable_dimensions": ["type", "event_type", "posted_by"],
+      "time_granularities": VALID_TIME_GRANULARITIES,
+      "spatial_filters": {
+          "bbox": "Bounding box filter (min_lon, min_lat, max_lon, max_lat)",
+      },
+      "event_types": [
+          "roadclosed", "fire", "information", "trafficjam", "event",
+          "rain", "complaint", "flood", "carbreakdown", "warning", "accident"
+      ],
+  }
+
+  # Fetch sample values
+  try:
+    with get_cursor() as cur:
+      # Get event types with counts
+      cur.execute("""
+                SELECT event_type, COUNT(*) as count
+                FROM longdo_events
+                WHERE event_type IS NOT NULL
+                GROUP BY event_type
+                ORDER BY count DESC
+            """)
+      schema_info["sample_types"] = [
+          {"value": r["event_type"], "count": r["count"]} for r in cur.fetchall()
+      ]
+
+      # Get top posters
+      cur.execute("""
+                SELECT posted_by, COUNT(*) as count
+                FROM longdo_events
+                WHERE posted_by IS NOT NULL
+                GROUP BY posted_by
+                ORDER BY count DESC
+                LIMIT 10
+            """)
+      schema_info["sample_posters"] = [
+          {"value": r["posted_by"], "count": r["count"]} for r in cur.fetchall()
+      ]
+
+      # Get date range
+      cur.execute("""
+                SELECT
+                    MIN(start_time)::date as min_date,
+                    MAX(start_time)::date as max_date,
+                    COUNT(*) as total_records
+                FROM longdo_events
+            """)
+      row = cur.fetchone()
+      if row:
+        schema_info["date_range"] = {
+            "min": str(row["min_date"]) if row["min_date"] else None,
+            "max": str(row["max_date"]) if row["max_date"] else None,
+            "total_records": row["total_records"],
+        }
+
+  except Exception as e:
+    schema_info["error"] = f"Could not fetch sample data: {e}"
+
+  return schema_info
+
+
+def query_longdo_aggregation(
+    group_by: str,
+    filters: Optional[Dict[str, Any]] = None,
+    order_by: str = "count_desc",
+    limit: int = 20,
+    bbox: Optional[Tuple[float, float, float, float]] = None,
+) -> List[Dict[str, Any]]:
+  """
+  Execute an aggregation query on Longdo events grouped by a dimension.
+
+  Args:
+      group_by: Dimension to group by (type/event_type, posted_by)
+      filters: Optional filters {dimension: value or [values]}
+      order_by: Sort order (count_desc, count_asc, name_asc, name_desc)
+      limit: Maximum results to return
+      bbox: Bounding box tuple (min_lon, min_lat, max_lon, max_lat)
+
+  Returns:
+      List of {dimension_value, count} dictionaries
+  """
+  # Map dimension to actual column
+  dimension_map = {"type": "event_type", "event_type": "event_type", "posted_by": "posted_by"}
+  if group_by not in dimension_map:
+    raise ValueError(f"Invalid group_by dimension: {group_by}. Valid: {list(dimension_map.keys())}")
+
+  db_column = dimension_map[group_by]
+
+  conditions = [f"{db_column} IS NOT NULL"]
+  params: List[Any] = []
+
+  # Apply filters
+  if filters:
+    for dim, value in filters.items():
+      if dim == "event_type" or dim == "type":
+        if isinstance(value, list):
+          placeholders = ",".join(["%s"] * len(value))
+          conditions.append(f"event_type IN ({placeholders})")
+          params.extend(value)
+        else:
+          conditions.append("event_type = %s")
+          params.append(value)
+      elif dim == "date_from":
+        conditions.append("start_time >= %s")
+        params.append(value)
+      elif dim == "date_to":
+        conditions.append("start_time <= %s")
+        params.append(value)
+
+  # Bounding box filter
+  bbox_cond, bbox_params = _build_bbox_condition(bbox)
+  if bbox_cond:
+    conditions.append(bbox_cond)
+    params.extend(bbox_params)
+
+  where_clause = " AND ".join(conditions)
+
+  # Determine ORDER BY
+  order_clause = "count DESC"
+  if order_by == "count_asc":
+    order_clause = "count ASC"
+  elif order_by == "name_asc":
+    order_clause = f"{db_column} ASC"
+  elif order_by == "name_desc":
+    order_clause = f"{db_column} DESC"
+
+  query = f"""
+        SELECT {db_column} as dimension_value, COUNT(*) as count
+        FROM longdo_events
+        WHERE {where_clause}
+        GROUP BY {db_column}
+        ORDER BY {order_clause}
+        LIMIT %s
+    """
+  params.append(limit)
+
+  try:
+    with get_cursor() as cur:
+      cur.execute(query, params)
+      return [dict(row) for row in cur.fetchall()]
+  except Exception as e:
+    raise RuntimeError(f"Longdo aggregation query failed: {e}")
+
+
+def query_longdo_statistics(
+    dimension: Optional[str] = None,
+    dimension_value: Optional[str] = None,
+    filters: Optional[Dict[str, Any]] = None,
+    bbox: Optional[Tuple[float, float, float, float]] = None,
+) -> Dict[str, Any]:
+  """
+  Get statistical summary of Longdo events.
+
+  Args:
+      dimension: Optional dimension to filter by (type/event_type, posted_by)
+      dimension_value: Value for the dimension filter
+      filters: Optional additional filters
+      bbox: Bounding box tuple
+
+  Returns:
+      Dictionary with statistics
+  """
+  conditions = []
+  params: List[Any] = []
+
+  # Dimension filter
+  if dimension and dimension_value:
+    dimension_map = {"type": "event_type", "event_type": "event_type", "posted_by": "posted_by"}
+    if dimension in dimension_map:
+      conditions.append(f"{dimension_map[dimension]} = %s")
+      params.append(dimension_value)
+
+  # Apply additional filters
+  if filters:
+    for dim, value in filters.items():
+      if dim == "event_type" or dim == "type":
+        if isinstance(value, list):
+          placeholders = ",".join(["%s"] * len(value))
+          conditions.append(f"event_type IN ({placeholders})")
+          params.extend(value)
+        else:
+          conditions.append("event_type = %s")
+          params.append(value)
+      elif dim == "date_from":
+        conditions.append("start_time >= %s")
+        params.append(value)
+      elif dim == "date_to":
+        conditions.append("start_time <= %s")
+        params.append(value)
+
+  # Bounding box filter
+  bbox_cond, bbox_params = _build_bbox_condition(bbox)
+  if bbox_cond:
+    conditions.append(bbox_cond)
+    params.extend(bbox_params)
+
+  where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+  query = f"""
+        SELECT
+            COUNT(*) as total_events,
+            COUNT(DISTINCT event_type) as unique_types,
+            COUNT(DISTINCT posted_by) as unique_posters,
+            MIN(start_time)::date as date_from,
+            MAX(start_time)::date as date_to,
+            COUNT(CASE WHEN end_time IS NOT NULL THEN 1 END) as with_end_time,
+            COUNT(CASE WHEN end_time IS NULL THEN 1 END) as ongoing
+        FROM longdo_events
+        WHERE {where_clause}
+    """
+
+  try:
+    with get_cursor() as cur:
+      cur.execute(query, params)
+      row = cur.fetchone()
+
+      if not row:
+        return {"error": "No data found"}
+
+      return {
+          "total_events": row["total_events"],
+          "unique_types": row["unique_types"],
+          "unique_posters": row["unique_posters"],
+          "date_range": {
+              "from": str(row["date_from"]) if row["date_from"] else None,
+              "to": str(row["date_to"]) if row["date_to"] else None,
+          },
+          "with_end_time": row["with_end_time"],
+          "ongoing": row["ongoing"],
+      }
+  except Exception as e:
+    return {"error": str(e)}
+
+
+def query_longdo_time_series(
+    granularity: str = "day",
+    group_by: Optional[str] = None,
+    filters: Optional[Dict[str, Any]] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    limit: int = 100,
+    bbox: Optional[Tuple[float, float, float, float]] = None,
+) -> List[Dict[str, Any]]:
+  """
+  Query Longdo events time series data.
+
+  Args:
+      granularity: Time bucket (hour, day, week, month, year)
+      group_by: Optional dimension to break down by (type/event_type)
+      filters: Optional filters
+      date_from: Start date
+      date_to: End date
+      limit: Maximum results
+      bbox: Bounding box tuple
+
+  Returns:
+      List of time series data points
+  """
+  if granularity not in VALID_TIME_GRANULARITIES:
+    raise ValueError(f"Invalid granularity: {granularity}. Valid: {VALID_TIME_GRANULARITIES}")
+
+  # Build date truncation
+  trunc_map = {
+      "hour": "DATE_TRUNC('hour', start_time)",
+      "day": "DATE_TRUNC('day', start_time)",
+      "week": "DATE_TRUNC('week', start_time)",
+      "month": "DATE_TRUNC('month', start_time)",
+      "year": "DATE_TRUNC('year', start_time)",
+  }
+  date_trunc = trunc_map[granularity]
+
+  conditions = ["start_time IS NOT NULL"]
+  params: List[Any] = []
+
+  # Date range filters
+  if date_from:
+    conditions.append("start_time >= %s")
+    params.append(date_from)
+  if date_to:
+    conditions.append("start_time <= %s")
+    params.append(date_to)
+
+  # Apply additional filters
+  if filters:
+    for dim, value in filters.items():
+      if dim == "event_type" or dim == "type":
+        if isinstance(value, list):
+          placeholders = ",".join(["%s"] * len(value))
+          conditions.append(f"event_type IN ({placeholders})")
+          params.extend(value)
+        else:
+          conditions.append("event_type = %s")
+          params.append(value)
+
+  # Bounding box filter
+  bbox_cond, bbox_params = _build_bbox_condition(bbox)
+  if bbox_cond:
+    conditions.append(bbox_cond)
+    params.extend(bbox_params)
+
+  where_clause = " AND ".join(conditions)
+
+  # Build query with optional group by
+  if group_by and group_by in ["type", "event_type"]:
+    query = f"""
+            SELECT
+                {date_trunc} as time_bucket,
+                event_type as group_value,
+                COUNT(*) as count
+            FROM longdo_events
+            WHERE {where_clause}
+            GROUP BY {date_trunc}, event_type
+            ORDER BY {date_trunc}, event_type
+            LIMIT %s
+        """
+  else:
+    query = f"""
+            SELECT
+                {date_trunc} as time_bucket,
+                COUNT(*) as count
+            FROM longdo_events
+            WHERE {where_clause}
+            GROUP BY {date_trunc}
+            ORDER BY {date_trunc}
+            LIMIT %s
+        """
+
+  params.append(limit)
+
+  try:
+    with get_cursor() as cur:
+      cur.execute(query, params)
+      results = []
+      for row in cur.fetchall():
+        item = {"time_bucket": str(row["time_bucket"]), "count": row["count"]}
+        if "group_value" in row.keys():
+          item["group_value"] = row["group_value"]
+        results.append(item)
+      return results
+  except Exception as e:
+    raise RuntimeError(f"Longdo time series query failed: {e}")
+
+
+def get_available_longdo_event_types() -> List[Dict[str, Any]]:
+  """
+  Get list of all available Longdo event types with their counts.
+
+  Returns:
+      List of {event_type, count} dictionaries
+  """
+  query = """
+        SELECT event_type, COUNT(*) as count
+        FROM longdo_events
+        WHERE event_type IS NOT NULL
+        GROUP BY event_type
+        ORDER BY count DESC
+    """
+
+  try:
+    with get_cursor() as cur:
+      cur.execute(query)
+      return [dict(row) for row in cur.fetchall()]
+  except Exception as e:
+    raise RuntimeError(f"Longdo event types query failed: {e}")
+
+
+def query_longdo_events_list(
+    event_types: Optional[List[str]] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    bbox: Optional[Tuple[float, float, float, float]] = None,
+    search_text: Optional[str] = None,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+  """
+  Get a list of actual Longdo events with details.
+
+  Args:
+      event_types: Filter by event types (roadclosed, trafficjam, etc.)
+      date_from: Start date filter
+      date_to: End date filter
+      bbox: Bounding box filter
+      search_text: Search in title/description
+      limit: Maximum events to return
+
+  Returns:
+      List of event dictionaries with full details
+  """
+  conditions = ["location IS NOT NULL"]
+  params: List[Any] = []
+
+  if event_types:
+    placeholders = ",".join(["%s"] * len(event_types))
+    conditions.append(f"event_type IN ({placeholders})")
+    params.extend(event_types)
+
+  if date_from:
+    conditions.append("start_time >= %s")
+    params.append(date_from)
+
+  if date_to:
+    conditions.append("start_time <= %s")
+    params.append(date_to)
+
+  if search_text:
+    conditions.append("(title ILIKE %s OR description ILIKE %s)")
+    search_pattern = f"%{search_text}%"
+    params.extend([search_pattern, search_pattern])
+
+  bbox_cond, bbox_params = _build_bbox_condition(bbox)
+  if bbox_cond:
+    conditions.append(bbox_cond)
+    params.extend(bbox_params)
+
+  where_clause = " AND ".join(conditions)
+
+  query = f"""
+        SELECT
+            id,
+            event_id,
+            event_type,
+            title,
+            description,
+            posted_by,
+            ST_Y(location::geometry) as lat,
+            ST_X(location::geometry) as lon,
+            start_time,
+            end_time,
+            created_at
+        FROM longdo_events
+        WHERE {where_clause}
+        ORDER BY start_time DESC
+        LIMIT %s
+    """
+  params.append(limit)
+
+  try:
+    with get_cursor() as cur:
+      cur.execute(query, params)
+      results = []
+      for row in cur.fetchall():
+        item = dict(row)
+        # Convert datetime objects to strings
+        for key in ["start_time", "end_time", "created_at"]:
+          if item.get(key):
+            item[key] = str(item[key])
+        results.append(item)
+      return results
+  except Exception as e:
+    raise RuntimeError(f"Longdo events list query failed: {e}")
+
+
+def get_longdo_event_detail(event_id: str) -> Optional[Dict[str, Any]]:
+  """
+  Get detailed information about a specific Longdo event.
+
+  Args:
+      event_id: The event ID to look up
+
+  Returns:
+      Dictionary with event details or None if not found
+  """
+  query = """
+        SELECT
+            id,
+            event_id,
+            event_type,
+            title,
+            description,
+            posted_by,
+            ST_Y(location::geometry) as lat,
+            ST_X(location::geometry) as lon,
+            start_time,
+            end_time,
+            scraped_at,
+            created_at,
+            updated_at
+        FROM longdo_events
+        WHERE event_id = %s OR id::text = %s
+        LIMIT 1
+    """
+
+  try:
+    with get_cursor() as cur:
+      cur.execute(query, [event_id, event_id])
+      row = cur.fetchone()
+      if row:
+        item = dict(row)
+        for key in ["start_time", "end_time", "scraped_at", "created_at", "updated_at"]:
+          if item.get(key):
+            item[key] = str(item[key])
+        return item
+      return None
+  except Exception as e:
+    raise RuntimeError(f"Longdo event detail query failed: {e}")
+
+
+def query_recent_longdo_events(
+    event_type: Optional[str] = None,
+    hours_back: int = 24,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+  """
+  Get recent Longdo events from the last N hours.
+
+  Args:
+      event_type: Optional specific event type to filter
+      hours_back: Number of hours to look back (default 24)
+      limit: Maximum events to return
+
+  Returns:
+      List of recent events with details
+  """
+  conditions = ["location IS NOT NULL", "start_time >= NOW() - INTERVAL '%s hours'"]
+  params: List[Any] = [hours_back]
+
+  if event_type:
+    conditions.append("event_type = %s")
+    params.append(event_type)
+
+  where_clause = " AND ".join(conditions)
+
+  query = f"""
+        SELECT
+            id,
+            event_id,
+            event_type,
+            title,
+            description,
+            posted_by,
+            ST_Y(location::geometry) as lat,
+            ST_X(location::geometry) as lon,
+            start_time,
+            end_time
+        FROM longdo_events
+        WHERE {where_clause}
+        ORDER BY start_time DESC
+        LIMIT %s
+    """
+  params.append(limit)
+
+  try:
+    with get_cursor() as cur:
+      cur.execute(query, params)
+      results = []
+      for row in cur.fetchall():
+        item = dict(row)
+        for key in ["start_time", "end_time"]:
+          if item.get(key):
+            item[key] = str(item[key])
+        results.append(item)
+      return results
+  except Exception as e:
+    raise RuntimeError(f"Recent Longdo events query failed: {e}")
+
+
+def search_traffy_reports(
+    categories: Optional[List[str]] = None,
+    districts: Optional[List[str]] = None,
+    status: Optional[List[str]] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    bbox: Optional[Tuple[float, float, float, float]] = None,
+    search_text: Optional[str] = None,
+    exclude_completed: bool = False,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+  """
+  Search Traffy reports with detailed information including addresses and coordinates.
+
+  This is useful for answering questions like:
+  - "What footpath problems are near Asok?"
+  - "Show me flooding reports in Khlong Toei"
+  - "List unfixed road problems in this area"
+
+  Args:
+      categories: Filter by report types (e.g., ["ทางเท้า", "ถนน"])
+      districts: Filter by district names (e.g., ["วัฒนา", "คลองเตย"])
+      status: Filter by status (e.g., ["เสร็จสิ้น", "รับเรื่องแล้ว"])
+      date_from: Start date filter
+      date_to: End date filter
+      bbox: Bounding box filter (min_lon, min_lat, max_lon, max_lat)
+      search_text: Search in description/comment text
+      exclude_completed: If True, exclude reports with status "เสร็จสิ้น"
+      limit: Maximum reports to return (default 20)
+
+  Returns:
+      List of report dictionaries with full details including location
+  """
+  conditions = ["location IS NOT NULL"]
+  params: List[Any] = []
+
+  # Category filter
+  if categories:
+    placeholders = ",".join(["%s"] * len(categories))
+    conditions.append(f"type IN ({placeholders})")
+    params.extend(categories)
+
+  # District filter
+  if districts:
+    placeholders = ",".join(["%s"] * len(districts))
+    conditions.append(f"district IN ({placeholders})")
+    params.extend(districts)
+
+  # Status filter
+  if status:
+    placeholders = ",".join(["%s"] * len(status))
+    conditions.append(f"state IN ({placeholders})")
+    params.extend(status)
+  elif exclude_completed:
+    conditions.append("state != %s")
+    params.append("เสร็จสิ้น")
+
+  # Date filters
+  if date_from:
+    conditions.append("timestamp >= %s")
+    params.append(date_from)
+
+  if date_to:
+    conditions.append("timestamp <= %s")
+    params.append(date_to)
+
+  # Search text in description
+  if search_text:
+    conditions.append("(comment ILIKE %s OR address ILIKE %s)")
+    search_pattern = f"%{search_text}%"
+    params.extend([search_pattern, search_pattern])
+
+  # Bounding box filter
+  bbox_cond, bbox_params = _build_bbox_condition(bbox)
+  if bbox_cond:
+    conditions.append(bbox_cond)
+    params.extend(bbox_params)
+
+  where_clause = " AND ".join(conditions)
+
+  query = f"""
+        SELECT
+            id,
+            ticket_id,
+            type,
+            state as status,
+            district,
+            province,
+            organization,
+            ST_Y(location::geometry) as lat,
+            ST_X(location::geometry) as lon,
+            address,
+            comment as description,
+            timestamp,
+            last_activity,
+            photo
+        FROM traffy_tickets
+        WHERE {where_clause}
+        ORDER BY timestamp DESC
+        LIMIT %s
+    """
+  params.append(limit)
+
+  try:
+    with get_cursor() as cur:
+      cur.execute(query, params)
+      results = []
+      for row in cur.fetchall():
+        item = dict(row)
+        # Convert datetime objects to strings
+        for key in ["timestamp", "last_activity"]:
+          if item.get(key):
+            item[key] = str(item[key])
+        results.append(item)
+      return results
+  except Exception as e:
+    raise RuntimeError(f"Traffy reports search failed: {e}")
