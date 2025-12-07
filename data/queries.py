@@ -280,6 +280,7 @@ def fetch_traffy_data(
             ST_X(location::geometry) as lon,
             type,
             comment as description,
+            photo as photo_url,
             state as status,
             timestamp,
             last_activity,
@@ -296,7 +297,7 @@ def fetch_traffy_data(
 
     # Define column names for the DataFrame
     columns = [
-        "id", "ticket_id", "lat", "lon", "type", "description",
+        "id", "ticket_id", "lat", "lon", "type", "description", "photo_url",
         "status", "timestamp", "last_activity", "org",
         "district", "province", "address"
     ]

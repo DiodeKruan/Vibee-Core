@@ -69,6 +69,19 @@ def get_tooltip_config(layer_type: str) -> Dict:
                         letter-spacing: 0.5px;
                     ">{category}</div>
                     <div style="
+                        margin-bottom: 8px;
+                        border-radius: 6px;
+                        overflow: hidden;
+                        border: 1px solid rgba(255, 255, 255, 0.08);
+                    ">
+                        <img 
+                            src="{photo_url}" 
+                            alt="Report photo"
+                            style="width: 100%; height: 160px; object-fit: cover; display: block;"
+                            onerror="this.parentElement.style.display='none';"
+                        />
+                    </div>
+                    <div style="
                         color: #e2e8f0;
                         font-size: 12px;
                         line-height: 1.5;

@@ -447,8 +447,16 @@ def render_fullscreen_map(data: pd.DataFrame, layer_type: str, layer_params: dic
     if layer_type in ["scatter"]:
         tooltip = {
             "html": """
-                <div style="background:rgba(15,15,20,0.95);padding:12px 16px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);font-family:system-ui;max-width:280px;">
+                <div style="background:rgba(15,15,20,0.95);padding:12px 16px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);font-family:system-ui;max-width:320px">
                     <div style="color:#f97316;font-weight:600;font-size:13px;margin-bottom:6px;">{type_display}</div>
+                    <div style="margin:8px 0;border-radius:6px;overflow:hidden;border:1px solid rgba(255,255,255,0.08);">
+                        <img 
+                            src="{photo_url}" 
+                            alt="Report photo"
+                            style="width:100%;height:160px;object-fit:cover;display:block;"
+                            onerror="this.parentElement.style.display='none';"
+                        />
+                    </div>
                     <div style="color:#e2e8f0;font-size:12px;line-height:1.4;">{description}</div>
                     <div style="color:#64748b;font-size:11px;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.1);">
                         📍 {coords_display}

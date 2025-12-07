@@ -108,7 +108,7 @@ def render_sidebar() -> Dict:
         st.session_state.max_records = max_records
         
         # Reload data button
-        if st.button("🔄 Reload Data", use_container_width=True, key="reload_data_btn"):
+        if st.button("Reload Data", use_container_width=True, key="reload_data_btn"):
             st.session_state.reload_data = True
             # Clear cached data to force reload
             if "traffy_data" in st.session_state:
@@ -231,12 +231,6 @@ def render_sidebar() -> Dict:
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Stats section
-        st.markdown("##### Statistics")
-        if "data_stats" in st.session_state:
-            stats = st.session_state.data_stats
-            st.metric("Total Reports", f"{stats.get('total', 0):,}")
-            st.metric("In View", f"{stats.get('in_view', 0):,}")
 
     # Return current parameters
     params = {
