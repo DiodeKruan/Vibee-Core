@@ -14,6 +14,12 @@ CONTENT_COLUMNS = ["ticket_id", "type", "description", "lat", "lon"]
 MAX_ORGANIZATIONS = 10
 MAX_TYPES = 5
 
+# Bangkok boundaries
+BK_HIGH_LAT = 13.9611
+BK_LOW_LAT = 13.4658
+BK_RIGHT_LONG = 100.9417
+BK_LEFT_LONG = 100.3153
+
 
 def drop_duplicates(df: pd.DataFrame) -> pd.DataFrame:
   """
@@ -79,6 +85,35 @@ def drop_invalid_coordinates(df: pd.DataFrame) -> pd.DataFrame:
   # Remove rows where both lat and lon are exactly 0.0
   mask = (df["lat"] == 0.0) & (df["lon"] == 0.0)
   return df[~mask]
+
+
+def filter_bangkok_only(df: pd.DataFrame) -> pd.DataFrame:
+  """
+  Filter for tickets within Bangkok boundaries and province.
+
+  Args:
+      df: Input DataFrame
+
+  Returns:
+      DataFrame filtered for Bangkok
+  """
+  if df.empty:
+    return df
+
+  # Check required columns
+  required_cols = ["lat", "lon", "province"]
+  if not all(col in df.columns for col in required_cols):
+    return df
+
+  mask = (
+      (df["lat"] >= BK_LOW_LAT)
+      & (df["lat"] <= BK_HIGH_LAT)
+      & (df["lon"] >= BK_LEFT_LONG)
+      & (df["lon"] <= BK_RIGHT_LONG)
+      & (df["province"] == "กรุงเทพมหานคร")
+  )
+
+  return df[mask]
 
 
 def one_hot_encode_types(df: pd.DataFrame) -> pd.DataFrame:
@@ -191,9 +226,10 @@ def remove_outliers(df: pd.DataFrame) -> pd.DataFrame:
 def calculate_duration(df: pd.DataFrame) -> pd.DataFrame:
   """
   Calculate duration_hour from last_activity - timestamp.
+  Imputes duration for unfinished tickets using max(last_activity).
 
   Args:
-      df: Input DataFrame with timestamp and last_activity columns
+      df: Input DataFrame with timestamp, last_activity, and status columns
 
   Returns:
       DataFrame with duration_hour column added
@@ -208,9 +244,24 @@ def calculate_duration(df: pd.DataFrame) -> pd.DataFrame:
   timestamp = pd.to_datetime(df["timestamp"], errors="coerce")
   last_activity = pd.to_datetime(df["last_activity"], errors="coerce")
 
+  # Calculate raw duration
+  duration_raw = last_activity - timestamp
+
+  # Impute for unfinished tickets if status column exists
+  if "status" in df.columns:
+    max_last_activity = last_activity.max()
+    # Use 'เสร็จสิ้น' (Done) as the completed status
+    # If status is NOT 'เสร็จสิ้น', use max_last_activity - timestamp
+    if pd.notna(max_last_activity):
+      imputed_duration = max_last_activity - timestamp
+      duration = duration_raw.where(df["status"] == "เสร็จสิ้น", imputed_duration)
+    else:
+      duration = duration_raw
+  else:
+    duration = duration_raw
+
   # Calculate duration in hours
-  duration = (last_activity - timestamp).dt.total_seconds() / 3600
-  df["duration_hour"] = duration
+  df["duration_hour"] = duration.dt.total_seconds() / 3600
 
   return df
 
@@ -280,12 +331,13 @@ def process_traffy_data(df: pd.DataFrame, verbose: bool = False) -> pd.DataFrame
   2. Drop rows with null ticket_id
   3. Drop example tickets
   4. Drop invalid coordinates (0.0, 0.0)
-  5. One-hot encode type → type_* columns + n_types
-  6. Add n_organizations count
-  7. Remove outliers (n_organizations >= 10 OR n_types > 5)
-  8. Calculate duration_hour
-  9. Format type for display (type_display column)
-  10. Format coordinates for display (coords_display column)
+  5. Filter for Bangkok only (lat/lon bounds + province)
+  6. One-hot encode type → type_* columns + n_types
+  7. Add n_organizations count
+  8. Remove outliers (n_organizations >= 10 OR n_types > 5)
+  9. Calculate duration_hour
+  10. Format type for display (type_display column)
+  11. Format coordinates for display (coords_display column)
 
   Args:
       df: Raw DataFrame from fetch_traffy_data()
@@ -322,35 +374,41 @@ def process_traffy_data(df: pd.DataFrame, verbose: bool = False) -> pd.DataFrame
   if verbose:
     print(f"After drop_invalid_coordinates: {len(df)} rows (removed {count_before - len(df)})")
 
-  # Step 5: One-hot encode types
+  # Step 5: Filter Bangkok only
+  count_before = len(df)
+  df = filter_bangkok_only(df)
+  if verbose:
+    print(f"After filter_bangkok_only: {len(df)} rows (removed {count_before - len(df)})")
+
+  # Step 6: One-hot encode types
   df = one_hot_encode_types(df)
   if verbose:
     type_cols = [c for c in df.columns if c.startswith("type_")]
     print(f"After one_hot_encode_types: {len(type_cols)} type columns created")
 
-  # Step 6: Add n_organizations
+  # Step 7: Add n_organizations
   df = add_n_organizations(df)
   if verbose:
     print(f"After add_n_organizations: mean={df['n_organizations'].mean():.2f}")
 
-  # Step 7: Remove outliers
+  # Step 8: Remove outliers
   count_before = len(df)
   df = remove_outliers(df)
   if verbose:
     print(f"After remove_outliers: {len(df)} rows (removed {count_before - len(df)})")
 
-  # Step 8: Calculate duration
+  # Step 9: Calculate duration
   df = calculate_duration(df)
   if verbose:
     valid_duration = df["duration_hour"].notna().sum()
     print(f"After calculate_duration: {valid_duration} rows with valid duration")
 
-  # Step 9: Format type for display
+  # Step 10: Format type for display
   df = format_type_display(df)
   if verbose:
     print(f"After format_type_display: type_display column added")
 
-  # Step 10: Format coordinates for display
+  # Step 11: Format coordinates for display
   df = format_coordinates(df)
   if verbose:
     print(f"After format_coordinates: coords_display column added")

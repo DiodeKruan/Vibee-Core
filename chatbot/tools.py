@@ -1423,6 +1423,8 @@ def switch_data_source(data_source: str) -> str:
     return f"Invalid data source '{data_source}'. Choose 'traffy' or 'longdo'."
 
   st.session_state.data_source = data_source
+  # Update widget state
+  st.session_state.data_source_select = data_source
 
   source_name = "Traffy Fondue" if data_source == "traffy" else "Longdo Traffic Events"
   return f"Switched to {source_name} data. Queries will now use this data source."
@@ -1631,13 +1633,18 @@ def highlight_tickets_on_map(ticket_ids: List[str]) -> str:
 @tool
 def zoom_to_district(district: str) -> str:
   """
-  Zoom the map to focus on a specific district.
+  Zoom the map to focus on a specific district or area.
 
-  Use when user wants to see a specific area, like
-  "show me Khlong Toei district" or "zoom to Bang Rak".
+  Use when user wants to see a specific area, like:
+  - "show me Khlong Toei district" or "zoom to Bang Rak"
+  - "โชว์แถวสามย่าน" (show Sam Yan area)
+  - "zoom to Asok" or "ดูแถวอโศก"
+
+  Supports both Bangkok district names and popular landmarks/areas like:
+  สามย่าน, สยาม, อโศก, ทองหล่อ, เอกมัย, สีลม, ลาดพร้าว, รามคำแหง, etc.
 
   Args:
-      district: Bangkok district name (Thai or English)
+      district: Bangkok district name or popular area (Thai or English)
 
   Returns:
       Confirmation message
@@ -1693,18 +1700,74 @@ def zoom_to_district(district: str) -> str:
       "ทวีวัฒนา": (13.7646, 100.3578),
   }
 
-  # Try to find matching district
+  # Popular areas/landmarks mapped to coordinates
+  area_coords = {
+      # Sam Yan / Siam area (ปทุมวัน)
+      "สามย่าน": (13.7323, 100.5292),
+      "samyan": (13.7323, 100.5292),
+      "sam yan": (13.7323, 100.5292),
+      "สยาม": (13.7456, 100.5342),
+      "siam": (13.7456, 100.5342),
+      "mbk": (13.7447, 100.5299),
+      "จุฬา": (13.7387, 100.5313),
+      "chula": (13.7387, 100.5313),
+      # Asok / Sukhumvit (วัฒนา)
+      "อโศก": (13.7379, 100.5605),
+      "asok": (13.7379, 100.5605),
+      "สุขุมวิท": (13.7313, 100.5670),
+      "sukhumvit": (13.7313, 100.5670),
+      "ทองหล่อ": (13.7326, 100.5787),
+      "thonglor": (13.7326, 100.5787),
+      "เอกมัย": (13.7199, 100.5852),
+      "ekkamai": (13.7199, 100.5852),
+      # Silom / Sathorn
+      "สีลม": (13.7280, 100.5341),
+      "silom": (13.7280, 100.5341),
+      "สาทร": (13.7189, 100.5268),
+      "sathorn": (13.7189, 100.5268),
+      # Other popular areas
+      "ลาดพร้าว": (13.8167, 100.5852),
+      "ladprao": (13.8167, 100.5852),
+      "รามคำแหง": (13.7581, 100.6229),
+      "ramkhamhaeng": (13.7581, 100.6229),
+      "อ่อนนุช": (13.7058, 100.6012),
+      "onnut": (13.7058, 100.6012),
+      "on nut": (13.7058, 100.6012),
+      "พระราม9": (13.7581, 100.5655),
+      "rama9": (13.7581, 100.5655),
+      "พระราม 9": (13.7581, 100.5655),
+      "รัชดา": (13.7685, 100.5691),
+      "ratchada": (13.7685, 100.5691),
+  }
+
+  # Try to find matching district first
   coords = district_coords.get(district)
+  matched_name = district
+
   if not coords:
-    # Try partial match
+    # Try area coordinates
+    coords = area_coords.get(district.lower())
+    if coords:
+      matched_name = district
+
+  if not coords:
+    # Try partial match in districts
     for d, c in district_coords.items():
       if district.lower() in d.lower() or d.lower() in district.lower():
         coords = c
-        district = d
+        matched_name = d
         break
 
   if not coords:
-    return f"District '{district}' not found. Try Thai names like คลองเตย, บางรัก, ปทุมวัน."
+    # Try partial match in areas
+    for a, c in area_coords.items():
+      if district.lower() in a.lower() or a.lower() in district.lower():
+        coords = c
+        matched_name = a
+        break
+
+  if not coords:
+    return f"Location '{district}' not found. Try Thai names like คลองเตย, บางรัก, ปทุมวัน, สามย่าน, อโศก."
 
   # Update map view state
   response = _ui_mcp.execute_action(
@@ -1719,8 +1782,8 @@ def zoom_to_district(district: str) -> str:
   )
 
   if response.success:
-    return f"Map zoomed to {district} district (center: {coords[0]:.4f}, {coords[1]:.4f})"
-  return f"Error zooming to district: {response.error}"
+    return f"Map zoomed to {matched_name} (center: {coords[0]:.4f}, {coords[1]:.4f})"
+  return f"Error zooming to location: {response.error}"
 
 
 @tool
@@ -1740,8 +1803,12 @@ def set_date_filter(days_back: int = 30) -> str:
   date_from = date.today() - timedelta(days=days_back)
   date_to = date.today()
 
-  st.session_state.date_from = date_from
-  st.session_state.date_to = date_to
+  st.session_state.data_date_from = date_from
+  st.session_state.data_date_to = date_to
+
+  # Update widget keys
+  st.session_state.data_date_from_input = date_from
+  st.session_state.data_date_to_input = date_to
 
   return f"Date filter set: {date_from} to {date_to} ({days_back} days)"
 

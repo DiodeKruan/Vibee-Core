@@ -22,6 +22,7 @@ class DataQuery:
   categories: Optional[List[str]] = None  # For Traffy data
   event_types: Optional[List[str]] = None  # For Longdo data
   districts: Optional[List[str]] = None
+  subdistricts: Optional[List[str]] = None  # Subdistrict filter (แขวง)
   bbox: Optional[Tuple[float, float, float, float]] = None  # (min_lon, min_lat, max_lon, max_lat)
   date_from: Optional[date] = None
   date_to: Optional[date] = None
@@ -468,22 +469,22 @@ class DataMCP:
         {
             "action": "aggregation",
             "description": "Get counts grouped by a dimension",
-            "params": ["group_by", "filters", "districts", "bbox", "order_by", "limit"],
+            "params": ["group_by", "filters", "districts", "subdistricts", "bbox", "order_by", "limit"],
         },
         {
             "action": "statistics",
             "description": "Get statistical summary",
-            "params": ["dimension", "dimension_value", "filters", "districts", "bbox"],
+            "params": ["dimension", "dimension_value", "filters", "districts", "subdistricts", "bbox"],
         },
         {
             "action": "time_series",
             "description": "Get time series data",
-            "params": ["granularity", "metric", "group_by", "filters", "districts", "bbox", "days_back"],
+            "params": ["granularity", "metric", "group_by", "filters", "districts", "subdistricts", "bbox", "days_back"],
         },
         {
             "action": "crosstab",
             "description": "Get cross-tabulation of two dimensions",
-            "params": ["row_dimension", "col_dimension", "metric", "filters", "bbox"],
+            "params": ["row_dimension", "col_dimension", "metric", "filters", "subdistricts", "bbox"],
         },
         {
             "action": "flexible",
@@ -498,7 +499,7 @@ class DataMCP:
         {
             "action": "reports",
             "description": "Fetch report data with filters",
-            "params": ["categories", "districts", "date_from", "date_to", "bbox", "limit"],
+            "params": ["categories", "districts", "subdistricts", "date_from", "date_to", "bbox", "limit"],
         },
     ]
 

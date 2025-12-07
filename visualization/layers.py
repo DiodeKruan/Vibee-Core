@@ -6,7 +6,9 @@ import numpy as np
 import pandas as pd
 import pydeck as pdk
 
+import streamlit as st
 from config.settings import settings
+from data.clustering import perform_dbscan_clustering
 
 
 # Pre-cached color mappings for O(1) vectorized lookups
@@ -95,6 +97,37 @@ def create_scatter_layer(
     data = data.assign(color=colors)
   else:
     data = data.assign(color=[_DEFAULT_POINT_COLOR] * len(data))
+
+  # Handle highlighted tickets
+  if "highlighted_tickets" in st.session_state and st.session_state.highlighted_tickets:
+    highlighted_ids = set(st.session_state.highlighted_tickets)
+
+    # Check if we have an ID column (ticket_id for traffy, event_id for longdo)
+    id_col = "ticket_id" if "ticket_id" in data.columns else "event_id"
+
+    if id_col in data.columns:
+      # Create a highlight color (bright cyan)
+      highlight_color = [0, 255, 255, 255]
+
+      # Update colors for highlighted items
+      def get_highlight_color(row):
+        if row[id_col] in highlighted_ids:
+          return highlight_color
+        return row["color"]
+
+      # Apply highlighting (this might be slower than vectorization but safe)
+      data["color"] = data.apply(get_highlight_color, axis=1)
+
+      # Increase radius for highlighted items
+      def get_highlight_radius(row):
+        if row[id_col] in highlighted_ids:
+          return radius * 2
+        return radius
+
+      # If radius is constant, we need to make it dynamic
+      if isinstance(radius, (int, float)):
+        data["radius_dynamic"] = data.apply(get_highlight_radius, axis=1)
+        radius = "radius_dynamic"
 
   return pdk.Layer(
       "ScatterplotLayer",
@@ -225,17 +258,21 @@ def create_cluster_layer(
     radius: int = 100,
     opacity: float = 0.8,
     data_source: str = "traffy",
+    eps_meters: int = 100,
+    min_samples: int = 5,
     **kwargs,
 ) -> pdk.Layer:
   """
   Create a cluster visualization using ScatterplotLayer with size encoding.
-  Note: True clustering requires pre-aggregation in the data layer.
+  Performs DBSCAN clustering on the fly.
 
   Args:
-      data: DataFrame with columns: lat, lon, count (pre-aggregated)
+      data: DataFrame with columns: lat, lon
       radius: Base radius for clusters
       opacity: Layer opacity (0-1)
       data_source: Data source ('traffy' or 'longdo')
+      eps_meters: DBSCAN eps parameter in meters
+      min_samples: DBSCAN min_samples parameter
 
   Returns:
       ScatterplotLayer configured for clustering visualization
@@ -247,30 +284,41 @@ def create_cluster_layer(
         get_position="[lon, lat]",
     )
 
-  # If count column exists, use it for sizing
-  if "count" in data.columns:
-    # Vectorized calculations using NumPy (much faster than apply())
-    max_count = data["count"].max()
-    normalized = data["count"].values / max_count
+  # Perform clustering
+  data = perform_dbscan_clustering(data, eps_meters=eps_meters, min_samples=min_samples)
 
-    # Vectorized sqrt for area-proportional sizing
-    cluster_radius = np.sqrt(normalized) * radius * 3 + radius
+  # If cluster_label column exists, use it for coloring
+  if "cluster_label" in data.columns:
+    # Vectorized color calculation based on cluster label
+    labels = data["cluster_label"].values
+    is_noise = labels == -1
 
-    # Vectorized RGBA color calculation
-    r_values = np.clip(200 + normalized * 55, 0, 255).astype(np.int32)
-    g_values = np.clip(140 - normalized * 100, 0, 255).astype(np.int32)
+    # Generate colors using simple hashing for determinism
+    # Use prime numbers to scatter colors
+    r_values = ((labels * 137) % 255).astype(np.int32)
+    g_values = ((labels * 53) % 255).astype(np.int32)
+    b_values = ((labels * 211) % 255).astype(np.int32)
+
+    # Set noise (label -1) to gray
+    r_values[is_noise] = 100
+    g_values[is_noise] = 100
+    b_values[is_noise] = 100
+
+    # Alpha channel
+    a_values = np.full(len(data), 200, dtype=np.int32)
+    a_values[is_noise] = 100  # Make noise more transparent
+
     # Stack into RGBA arrays and convert to list of lists
     colors = np.column_stack([
         r_values,
         g_values,
-        np.zeros(len(data), dtype=np.int32),  # B = 0
-        np.full(len(data), 200, dtype=np.int32)  # A = 200
+        b_values,
+        a_values
     ]).tolist()
 
-    data = data.assign(cluster_radius=cluster_radius, color=colors)
+    data = data.assign(color=colors)
   else:
     data = data.assign(
-        cluster_radius=radius,
         color=[_DEFAULT_POINT_COLOR] * len(data)
     )
 
@@ -279,8 +327,8 @@ def create_cluster_layer(
       data=data,
       get_position="[lon, lat]",
       get_color="color",
-      get_radius="cluster_radius",
-      radius_min_pixels=10,
+      get_radius=radius,
+      radius_min_pixels=2,
       radius_max_pixels=100,
       opacity=opacity,
       pickable=True,

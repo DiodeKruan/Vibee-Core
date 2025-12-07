@@ -342,52 +342,6 @@ def inject_custom_css():
   )
 
 
-def generate_demo_data(n_points: int = 5000) -> pd.DataFrame:
-  """Generate demo data for visualization."""
-  np.random.seed(42)
-
-  lat_center, lon_center = settings.map.center_lat, settings.map.center_lon
-
-  # Generate clustered points
-  n_clusters = 15
-  cluster_centers_lat = np.random.normal(lat_center, 0.05, n_clusters)
-  cluster_centers_lon = np.random.normal(lon_center, 0.07, n_clusters)
-
-  lats, lons = [], []
-  for i in range(n_points):
-    cluster_idx = np.random.randint(0, n_clusters)
-    lats.append(np.random.normal(cluster_centers_lat[cluster_idx], 0.02))
-    lons.append(np.random.normal(cluster_centers_lon[cluster_idx], 0.02))
-
-  # Generate category weights matching the number of categories
-  all_categories = settings.categories.categories
-  n_categories = len(all_categories)
-  # Use exponential decay for realistic distribution (more common categories first)
-  raw_weights = np.exp(-np.arange(n_categories) * 0.15)
-  category_weights = raw_weights / raw_weights.sum()  # Normalize to sum to 1
-
-  categories = np.random.choice(
-      all_categories,
-      size=n_points,
-      p=category_weights,
-  )
-
-  dates = pd.date_range(end=date.today(), periods=90, freq="D")
-  created_dates = np.random.choice(dates, size=n_points)
-  descriptions = [f"Report #{i + 1} - {cat}" for i, cat in enumerate(categories)]
-  statuses = np.random.choice(["pending", "in_progress", "resolved"], size=n_points, p=[0.3, 0.25, 0.45])
-
-  return pd.DataFrame({
-      "id": range(1, n_points + 1),
-      "lat": lats,
-      "lon": lons,
-      "category": categories,
-      "created_at": created_dates,
-      "description": descriptions,
-      "status": statuses,
-  })
-
-
 def filter_data(df: pd.DataFrame, params: dict) -> pd.DataFrame:
   """Filter data based on sidebar parameters (categories/event_types, date filtering done at fetch)."""
   filtered = df.copy()
@@ -438,7 +392,19 @@ def filter_data(df: pd.DataFrame, params: dict) -> pd.DataFrame:
 
 def render_fullscreen_map(data: pd.DataFrame, layer_type: str, layer_params: dict, data_source: str = "traffy"):
   """Render the full-screen PyDeck map."""
-  view_state = get_initial_view_state()
+
+  # View State
+  if "map_view_state" in st.session_state:
+    state = st.session_state.map_view_state
+    view_state = pdk.ViewState(
+        latitude=state.get("latitude", settings.map.center_lat),
+        longitude=state.get("longitude", settings.map.center_lon),
+        zoom=state.get("zoom", settings.map.default_zoom),
+        pitch=state.get("pitch", settings.map.default_pitch),
+        bearing=state.get("bearing", settings.map.default_bearing),
+    )
+  else:
+    view_state = get_initial_view_state()
 
   layers = [create_layer(layer_type, data, data_source=data_source, **layer_params)]
 
@@ -532,7 +498,14 @@ def render_floating_header(total: int, filtered: int, categories: int, layer: st
   )
 
 
-def load_data(date_from: date = None, date_to: date = None, limit: int = 100000, data_source: str = "traffy") -> pd.DataFrame:
+def load_data(
+    date_from: date = None,
+    date_to: date = None,
+    limit: int = 100000,
+    data_source: str = "traffy",
+    districts: list = None,
+    subdistricts: list = None,
+) -> pd.DataFrame:
   """
   Load data from database with date range filtering, then process through pipeline.
   Falls back to demo data on error.
@@ -542,16 +515,20 @@ def load_data(date_from: date = None, date_to: date = None, limit: int = 100000,
       date_to: End date for data fetch
       limit: Maximum number of records to fetch
       data_source: Data source to fetch from ('traffy' or 'longdo')
+      districts: List of districts to filter by
+      subdistricts: List of subdistricts to filter by
 
   Returns:
       Processed DataFrame ready for visualization
   """
   try:
     if data_source == "traffy":
-      # Fetch raw data from database with date filtering
+      # Fetch raw data from database with date and location filtering
       df = fetch_traffy_data(
           date_from=date_from,
           date_to=date_to,
+          districts=districts if districts else None,
+          subdistricts=subdistricts if subdistricts else None,
           limit=limit,
       )
 
@@ -601,11 +578,10 @@ def load_data(date_from: date = None, date_to: date = None, limit: int = 100000,
         return df
 
   except Exception as e:
-    st.sidebar.warning(f"Database connection failed: {e}")
+    st.sidebar.error(f"Database error: {e}")
 
-  # Fallback to demo data
-  st.sidebar.info("Using demo data")
-  return generate_demo_data(n_points=8000)
+  # Return empty DataFrame on error
+  return pd.DataFrame()
 
 
 def main():
@@ -622,10 +598,15 @@ def main():
   data_date_to = params.get("data_date_to")
   max_records = params.get("max_records", 100000)
   data_source = params.get("data_source", "traffy")
+  districts = params.get("districts", [])
+  subdistricts = params.get("subdistricts", [])
 
   # Load data from database (cached by Streamlit)
   # Reload if data not in session state or if parameters changed
-  current_fetch_key = f"{data_source}_{data_date_from}_{data_date_to}_{max_records}"
+  # Include districts and subdistricts in the cache key
+  districts_key = "_".join(sorted(districts)) if districts else "all"
+  subdistricts_key = "_".join(sorted(subdistricts)) if subdistricts else "all"
+  current_fetch_key = f"{data_source}_{data_date_from}_{data_date_to}_{max_records}_{districts_key}_{subdistricts_key}"
 
   # Use appropriate session state key based on data source
   data_key = f"{data_source}_data"
@@ -640,6 +621,8 @@ def main():
           date_to=data_date_to,
           limit=max_records,
           data_source=data_source,
+          districts=districts,
+          subdistricts=subdistricts,
       )
       st.session_state.fetch_key = current_fetch_key
 
@@ -657,6 +640,9 @@ def main():
 
   if layer_type == "hexagon":
     layer_params["radius"] = params.get("hexagon_radius", settings.map.hexagon_radius)
+  elif layer_type == "cluster":
+    layer_params["eps_meters"] = params.get("cluster_eps", 100)
+    layer_params["min_samples"] = params.get("cluster_min_samples", 5)
 
   render_fullscreen_map(filtered_df, layer_type, layer_params, data_source=data_source)
 

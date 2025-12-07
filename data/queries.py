@@ -34,7 +34,7 @@ def _build_bbox_condition(bbox: Optional[Tuple[float, float, float, float]]) -> 
 
 def _build_districts_condition(districts: Optional[List[str]]) -> Tuple[str, List[Any]]:
   """
-  Build a district filter condition.
+  Build a district filter condition (uses imputed_district with fallback).
 
   Args:
       districts: List of district names
@@ -46,8 +46,26 @@ def _build_districts_condition(districts: Optional[List[str]]) -> Tuple[str, Lis
     return "", []
 
   placeholders = ",".join(["%s"] * len(districts))
-  condition = f"district IN ({placeholders})"
+  condition = f"COALESCE(imputed_district, district) IN ({placeholders})"
   return condition, districts
+
+
+def _build_subdistricts_condition(subdistricts: Optional[List[str]]) -> Tuple[str, List[Any]]:
+  """
+  Build a subdistrict filter condition (uses imputed_subdistrict with fallback).
+
+  Args:
+      subdistricts: List of subdistrict names
+
+  Returns:
+      Tuple of (condition_string, params_list)
+  """
+  if not subdistricts:
+    return "", []
+
+  placeholders = ",".join(["%s"] * len(subdistricts))
+  condition = f"COALESCE(imputed_subdistrict, subdistrict) IN ({placeholders})"
+  return condition, subdistricts
 
 
 # =============================================================================
@@ -58,6 +76,7 @@ def _build_districts_condition(districts: Optional[List[str]]) -> Tuple[str, Lis
 def fetch_traffy_data(
     categories: Optional[List[str]] = None,
     districts: Optional[List[str]] = None,
+    subdistricts: Optional[List[str]] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     bbox: Optional[Tuple[float, float, float, float]] = None,
@@ -69,6 +88,7 @@ def fetch_traffy_data(
   Args:
       categories: List of category types to filter
       districts: List of district names to filter
+      subdistricts: List of subdistrict names to filter
       date_from: Start date filter
       date_to: End date filter
       bbox: Bounding box tuple (min_lon, min_lat, max_lon, max_lat)
@@ -91,6 +111,12 @@ def fetch_traffy_data(
   if district_cond:
     conditions.append(district_cond)
     params.extend(district_params)
+
+  # Subdistrict filter
+  subdistrict_cond, subdistrict_params = _build_subdistricts_condition(subdistricts)
+  if subdistrict_cond:
+    conditions.append(subdistrict_cond)
+    params.extend(subdistrict_params)
 
   # Date filters
   if date_from:
@@ -1086,10 +1112,10 @@ def get_available_districts() -> List[Dict[str, Any]]:
       List of {district, count} dictionaries
   """
   query = """
-        SELECT district, COUNT(*) as count
+        SELECT COALESCE(imputed_district, district) as district, COUNT(*) as count
         FROM traffy_tickets
-        WHERE district IS NOT NULL
-        GROUP BY district
+        WHERE COALESCE(imputed_district, district) IS NOT NULL
+        GROUP BY COALESCE(imputed_district, district)
         ORDER BY count DESC
     """
 
@@ -1099,6 +1125,50 @@ def get_available_districts() -> List[Dict[str, Any]]:
       return [dict(row) for row in cur.fetchall()]
   except Exception as e:
     raise RuntimeError(f"District list query failed: {e}")
+
+
+def get_available_subdistricts(district: Optional[str] = None) -> List[Dict[str, Any]]:
+  """
+  Get list of all available subdistricts with their counts.
+
+  Args:
+      district: Optional district name to filter subdistricts
+
+  Returns:
+      List of {subdistrict, district, count} dictionaries
+  """
+  if district:
+    query = """
+        SELECT
+            COALESCE(imputed_subdistrict, subdistrict) as subdistrict,
+            COALESCE(imputed_district, district) as district,
+            COUNT(*) as count
+        FROM traffy_tickets
+        WHERE COALESCE(imputed_subdistrict, subdistrict) IS NOT NULL
+          AND COALESCE(imputed_district, district) = %s
+        GROUP BY COALESCE(imputed_subdistrict, subdistrict), COALESCE(imputed_district, district)
+        ORDER BY count DESC
+    """
+    params = [district]
+  else:
+    query = """
+        SELECT
+            COALESCE(imputed_subdistrict, subdistrict) as subdistrict,
+            COALESCE(imputed_district, district) as district,
+            COUNT(*) as count
+        FROM traffy_tickets
+        WHERE COALESCE(imputed_subdistrict, subdistrict) IS NOT NULL
+        GROUP BY COALESCE(imputed_subdistrict, subdistrict), COALESCE(imputed_district, district)
+        ORDER BY count DESC
+    """
+    params = []
+
+  try:
+    with get_cursor() as cur:
+      cur.execute(query, params) if params else cur.execute(query)
+      return [dict(row) for row in cur.fetchall()]
+  except Exception as e:
+    raise RuntimeError(f"Subdistrict list query failed: {e}")
 
 
 # =============================================================================

@@ -1,17 +1,18 @@
 """Sidebar component with parameter controls and filters."""
 
 from datetime import date
-from typing import Dict
+from typing import Dict, List
 
 import streamlit as st
 
 from config.settings import settings
+from data.queries import get_available_districts, get_available_subdistricts
 
 
 # Default data fetch settings
 DEFAULT_DATA_DATE_FROM = date(2023, 1, 1)
 DEFAULT_DATA_DATE_TO = date(2025, 12, 31)
-DEFAULT_MAX_RECORDS = 50000
+DEFAULT_MAX_RECORDS = 20000
 MAX_RECORDS_LIMIT = 500000
 
 
@@ -26,11 +27,18 @@ def init_sidebar_state() -> None:
       "opacity": settings.map.default_opacity,
       "elevation_scale": settings.map.default_elevation_scale,
       "hexagon_radius": settings.map.hexagon_radius,
+      "cluster_eps": 200,
+      "cluster_min_samples": 20,
       # Data fetch settings (also used for filtering)
       "data_date_from": DEFAULT_DATA_DATE_FROM,
       "data_date_to": DEFAULT_DATA_DATE_TO,
       "max_records": DEFAULT_MAX_RECORDS,
       "reload_data": False,
+      # Location filters
+      "selected_districts": [],
+      "selected_subdistricts": [],
+      "available_districts": [],
+      "available_subdistricts": [],
   }
 
   for key, value in defaults.items():
@@ -219,6 +227,30 @@ def render_sidebar() -> Dict:
       )
       st.session_state.hexagon_radius = hexagon_radius
 
+    # Cluster specific: EPS and Min Samples
+    if layer_type == "cluster":
+      cluster_eps = st.slider(
+          "Cluster Radius (m)",
+          min_value=50,
+          max_value=3000,
+          value=st.session_state.cluster_eps,
+          step=50,
+          key="cluster_eps_slider",
+          help="The maximum distance between two samples for one to be considered as in the neighborhood of the other.",
+      )
+      st.session_state.cluster_eps = cluster_eps
+
+      cluster_min_samples = st.slider(
+          "Min Samples",
+          min_value=5,
+          max_value=200,
+          value=st.session_state.cluster_min_samples,
+          step=5,
+          key="cluster_min_samples_slider",
+          help="The number of samples in a neighborhood for a point to be considered as a core point.",
+      )
+      st.session_state.cluster_min_samples = cluster_min_samples
+
     # Heatmap specific: Intensity
     if layer_type == "heatmap":
       st.slider(
@@ -293,12 +325,84 @@ def render_sidebar() -> Dict:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
+    # District Filter Section (only for Traffy data)
+    if st.session_state.data_source == "traffy":
+      st.markdown("##### Location Filter")
+
+      # Load available districts if not already loaded
+      if not st.session_state.available_districts:
+        try:
+          districts_data = get_available_districts()
+          st.session_state.available_districts = [d["district"] for d in districts_data if d["district"]]
+        except Exception:
+          st.session_state.available_districts = []
+
+      if st.session_state.available_districts:
+        # District multiselect with search
+        selected_districts = st.multiselect(
+            "District (เขต)",
+            options=st.session_state.available_districts,
+            default=st.session_state.selected_districts,
+            key="district_multiselect",
+            placeholder="Select districts...",
+        )
+
+        # Handle district selection change - update subdistricts
+        if selected_districts != st.session_state.selected_districts:
+          st.session_state.selected_districts = selected_districts
+          # Reset subdistrict selection when districts change
+          st.session_state.selected_subdistricts = []
+          st.session_state.available_subdistricts = []
+          st.rerun()
+
+        # Show count
+        if selected_districts:
+          st.caption(f"{len(selected_districts)} district(s) selected")
+        else:
+          st.caption("All districts")
+
+        # Subdistrict filter (dependent on selected districts)
+        if selected_districts:
+          # Load subdistricts for selected districts
+          if not st.session_state.available_subdistricts:
+            try:
+              all_subdistricts = []
+              for district in selected_districts:
+                subdistricts_data = get_available_subdistricts(district)
+                all_subdistricts.extend([
+                    d["subdistrict"] for d in subdistricts_data if d["subdistrict"]
+                ])
+              st.session_state.available_subdistricts = list(set(all_subdistricts))
+            except Exception:
+              st.session_state.available_subdistricts = []
+
+          if st.session_state.available_subdistricts:
+            selected_subdistricts = st.multiselect(
+                "Subdistrict (แขวง)",
+                options=sorted(st.session_state.available_subdistricts),
+                default=st.session_state.selected_subdistricts,
+                key="subdistrict_multiselect",
+                placeholder="Select subdistricts...",
+            )
+            st.session_state.selected_subdistricts = selected_subdistricts
+
+            # Show count
+            if selected_subdistricts:
+              st.caption(f"{len(selected_subdistricts)} subdistrict(s) selected")
+            else:
+              st.caption("All subdistricts in selected districts")
+
+      st.markdown("<br>", unsafe_allow_html=True)
+
   # Return current parameters
   params = {
       "layer_type": st.session_state.layer_type,
       "data_source": st.session_state.data_source,
       "categories": st.session_state.selected_categories,
       "event_types": st.session_state.selected_event_types,
+      # Location filters
+      "districts": st.session_state.selected_districts,
+      "subdistricts": st.session_state.selected_subdistricts,
       # Use data date range for both fetch and filter
       "date_from": st.session_state.data_date_from,
       "date_to": st.session_state.data_date_to,
@@ -309,6 +413,8 @@ def render_sidebar() -> Dict:
       "opacity": st.session_state.opacity,
       "elevation_scale": st.session_state.elevation_scale,
       "hexagon_radius": st.session_state.hexagon_radius,
+      "cluster_eps": st.session_state.cluster_eps,
+      "cluster_min_samples": st.session_state.cluster_min_samples,
   }
 
   return params
@@ -340,6 +446,9 @@ def get_current_params() -> Dict:
       "data_source": st.session_state.data_source,
       "categories": st.session_state.selected_categories,
       "event_types": st.session_state.selected_event_types,
+      # Location filters
+      "districts": st.session_state.selected_districts,
+      "subdistricts": st.session_state.selected_subdistricts,
       # Use data date range for both fetch and filter
       "date_from": st.session_state.data_date_from,
       "date_to": st.session_state.data_date_to,
@@ -350,4 +459,6 @@ def get_current_params() -> Dict:
       "opacity": st.session_state.opacity,
       "elevation_scale": st.session_state.elevation_scale,
       "hexagon_radius": st.session_state.hexagon_radius,
+      "cluster_eps": st.session_state.cluster_eps,
+      "cluster_min_samples": st.session_state.cluster_min_samples,
   }
