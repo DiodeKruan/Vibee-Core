@@ -159,10 +159,10 @@ def render_sidebar() -> Dict:
         if layer_type in ["scatter", "icon", "cluster"]:
             point_radius = st.slider(
                 "Point Radius",
-                min_value=50,
-                max_value=500,
+                min_value=5,
+                max_value=100,
                 value=st.session_state.point_radius,
-                step=50,
+                step=1,
                 key="radius_slider",
             )
             st.session_state.point_radius = point_radius

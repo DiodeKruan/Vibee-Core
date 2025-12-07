@@ -35,7 +35,7 @@ class MapConfig:
 
     # Layer defaults
     default_layer: str = "scatter"
-    default_point_radius: int = 100
+    default_point_radius: int = 15
     default_opacity: float = 0.8
     default_elevation_scale: int = 4
 

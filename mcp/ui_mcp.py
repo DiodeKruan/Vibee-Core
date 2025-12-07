@@ -230,8 +230,8 @@ class UIMCP:
 
     def _handle_set_radius(self, params: Dict) -> UIResponse:
         """Handle radius change action."""
-        radius = params.get("radius", 100)
-        radius = max(50, min(500, radius))
+        radius = params.get("radius", 10)
+        radius = max(5, min(100, radius))
 
         st.session_state.point_radius = radius
         return UIResponse(
