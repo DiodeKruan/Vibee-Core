@@ -125,7 +125,6 @@ def render_sidebar() -> Dict:
             "scatter": "📍 Scatter Points",
             "heatmap": "🔥 Heatmap",
             "hexagon": "⬡ 3D Hexagon",
-            "icon": "🏷️ Icons",
             "cluster": "⚫ Clusters",
         }
 
@@ -156,7 +155,7 @@ def render_sidebar() -> Dict:
         st.session_state.opacity = opacity
 
         # Scatter/Icon specific: Point radius
-        if layer_type in ["scatter", "icon", "cluster"]:
+        if layer_type in ["scatter", "cluster"]:
             point_radius = st.slider(
                 "Point Radius",
                 min_value=5,
@@ -191,7 +190,7 @@ def render_sidebar() -> Dict:
 
         # Heatmap specific: Intensity
         if layer_type == "heatmap":
-            heatmap_radius = st.slider(
+            st.slider(
                 "Heat Radius",
                 min_value=10,
                 max_value=100,

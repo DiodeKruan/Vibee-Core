@@ -127,7 +127,7 @@ class Settings:
 
     # Layer types available
     layer_types: List[str] = field(
-        default_factory=lambda: ["scatter", "heatmap", "hexagon", "icon", "cluster"]
+        default_factory=lambda: ["scatter", "heatmap", "hexagon", "cluster"]
     )
 
 

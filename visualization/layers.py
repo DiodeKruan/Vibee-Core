@@ -1,6 +1,6 @@
 """PyDeck layer factories for different visualization types."""
 
-from typing import Any, Dict, List, Optional
+from typing import List
 
 import pandas as pd
 import pydeck as pdk
@@ -17,7 +17,7 @@ def create_layer(
     Factory function to create PyDeck layers.
 
     Args:
-        layer_type: Type of layer ('scatter', 'heatmap', 'hexagon', 'icon', 'cluster')
+        layer_type: Type of layer ('scatter', 'heatmap', 'hexagon', 'cluster')
         data: DataFrame with lat/lon data
         **kwargs: Additional layer-specific parameters
 
@@ -28,7 +28,6 @@ def create_layer(
         "scatter": create_scatter_layer,
         "heatmap": create_heatmap_layer,
         "hexagon": create_hexagon_layer,
-        "icon": create_icon_layer,
         "cluster": create_cluster_layer,
     }
 
@@ -192,77 +191,6 @@ def create_hexagon_layer(
             [240, 59, 32],
             [189, 0, 38],
         ],
-    )
-
-
-def create_icon_layer(
-    data: pd.DataFrame,
-    icon_size: int = 40,
-    opacity: float = 0.8,
-    pickable: bool = True,
-    **kwargs,
-) -> pdk.Layer:
-    """
-    Create an IconLayer with category-based icons.
-
-    Args:
-        data: DataFrame with columns: lat, lon, category
-        icon_size: Size of icons in pixels
-        opacity: Layer opacity (0-1)
-        pickable: Whether icons are clickable
-
-    Returns:
-        IconLayer
-    """
-    if data.empty:
-        return pdk.Layer(
-            "IconLayer",
-            data=[],
-            get_position="[lon, lat]",
-        )
-
-    # Icon mapping for categories
-    icon_mapping = {
-        "ถนน": "marker",
-        "ทางเท้า": "marker",
-        "ไฟฟ้า": "marker",
-        "น้ำท่วม": "marker",
-        "ขยะ": "marker",
-        "ต้นไม้": "marker",
-        "ท่อระบายน้ำ": "marker",
-        "ป้าย": "marker",
-        "สะพาน": "marker",
-        "อื่นๆ": "marker",
-    }
-
-    # Add icon data
-    data = data.copy()
-    data["icon_data"] = data.apply(
-        lambda row: {
-            "url": "https://raw.githubusercontent.com/visgl/deck.gl-data/master/website/icon-marker.png",
-            "width": 128,
-            "height": 128,
-            "anchorY": 128,
-        },
-        axis=1,
-    )
-
-    # Add color based on category
-    if "category" in data.columns:
-        data["color"] = data["category"].apply(get_color_for_category)
-    else:
-        data["color"] = [[255, 140, 0, 255]] * len(data)
-
-    return pdk.Layer(
-        "IconLayer",
-        data=data,
-        get_position="[lon, lat]",
-        get_icon="icon_data",
-        get_color="color",
-        get_size=icon_size,
-        size_scale=1,
-        opacity=opacity,
-        pickable=pickable,
     )
 
 

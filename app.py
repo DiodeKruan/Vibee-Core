@@ -20,8 +20,6 @@ from components.sidebar import render_sidebar, init_sidebar_state
 from components.chatbox import render_chatbox
 from visualization.map_view import get_initial_view_state
 from visualization.layers import create_layer
-from mcp.ui_mcp import ui_mcp
-from mcp.data_mcp import data_mcp
 from utils.sampling import sample_data, aggregate_to_hexagons
 from data.queries import fetch_traffy_data
 from data.pipeline import process_traffy_data
@@ -435,8 +433,6 @@ def prepare_data_for_layer(df: pd.DataFrame, layer_type: str, params: dict) -> p
         return sample_data(df, max_points=settings.map.max_points_heatmap)
     elif layer_type in ["hexagon", "cluster"]:
         return aggregate_to_hexagons(df, hex_size=params.get("hexagon_radius", 200) / 111000)
-    elif layer_type == "icon":
-        return sample_data(df, max_points=1000)
     return df
 
 
@@ -448,7 +444,7 @@ def render_fullscreen_map(data: pd.DataFrame, layer_type: str, layer_params: dic
     
     # Tooltip config
     tooltip = None
-    if layer_type in ["scatter", "icon"]:
+    if layer_type in ["scatter"]:
         tooltip = {
             "html": """
                 <div style="background:rgba(15,15,20,0.95);padding:12px 16px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);font-family:system-ui;max-width:280px;">

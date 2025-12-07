@@ -49,7 +49,7 @@ def get_tooltip_config(layer_type: str) -> Dict:
     Returns:
         Tooltip configuration dictionary
     """
-    if layer_type in ["scatter", "icon"]:
+    if layer_type in ["scatter"]:
         return {
             "html": """
                 <div style="
