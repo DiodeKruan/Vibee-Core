@@ -392,8 +392,34 @@ def filter_data(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     # Use 'category' column if present, otherwise try 'type'
     category_col = "category" if "category" in filtered.columns else "type"
     
-    if params.get("categories") and category_col in filtered.columns:
-        filtered = filtered[filtered[category_col].isin(params["categories"])]
+    selected_categories = params.get("categories", [])
+    
+    if selected_categories and category_col in filtered.columns:
+        # Check if "Unspecified" is selected
+        include_unspecified = "ไม่ระบุ" in selected_categories
+        # Get other selected categories (excluding "Unspecified")
+        other_categories = [cat for cat in selected_categories if cat != "ไม่ระบุ"]
+        
+        # Handle comma-separated types: show ticket if ANY selected type matches
+        def matches_any_category(type_str):
+            # Check if type is empty/null
+            is_empty = pd.isna(type_str) or str(type_str).strip() == ""
+            
+            if is_empty:
+                # Show if "Unspecified" is selected
+                return include_unspecified
+            
+            # Split the comma-separated types
+            ticket_types = [t.strip() for t in str(type_str).split(",") if t.strip()]
+            
+            if not ticket_types:
+                # No valid types, treat as unspecified
+                return include_unspecified
+            
+            # Check if any selected category is in the ticket's types
+            return any(cat in ticket_types for cat in other_categories)
+        
+        filtered = filtered[filtered[category_col].apply(matches_any_category)]
     
     return filtered
 

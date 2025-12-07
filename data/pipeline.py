@@ -201,7 +201,8 @@ def calculate_duration(df: pd.DataFrame) -> pd.DataFrame:
 def format_type_display(df: pd.DataFrame) -> pd.DataFrame:
     """
     Format the type column for display in tooltips.
-    Replaces commas with line breaks for better readability.
+    Replaces commas with bullet points for better readability.
+    Shows "Unspecified" for empty/null types.
     
     Args:
         df: Input DataFrame with 'type' column
@@ -212,13 +213,15 @@ def format_type_display(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     
     if "type" not in df.columns:
-        df["type_display"] = ""
+        df["type_display"] = "ไม่ระบุ"
         return df
     
     def format_types(x):
-        if pd.isna(x) or x == "":
-            return ""
+        if pd.isna(x) or str(x).strip() == "":
+            return "ไม่ระบุ"
         types = [t.strip() for t in str(x).split(",") if t.strip()]
+        if not types:
+            return "ไม่ระบุ"
         # Join with bullet points for display
         return " • ".join(types)
     

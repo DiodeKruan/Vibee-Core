@@ -49,6 +49,9 @@ class MapConfig:
 class CategoryConfig:
     """Traffy Fondue report categories (ticket types)."""
 
+    # Special category for tickets without type
+    unspecified_type: str = "ไม่ระบุ"
+    
     categories: List[str] = field(
         default_factory=lambda: [
             "PM2.5",
@@ -75,6 +78,7 @@ class CategoryConfig:
             "เสนอแนะ",
             "เสียงรบกวน",
             "แสงสว่าง",
+            "ไม่ระบุ",  # For tickets without type
         ]
     )
 
@@ -105,6 +109,7 @@ class CategoryConfig:
             "เสนอแนะ": (60, 179, 113, 200),
             "เสียงรบกวน": (148, 0, 211, 200),
             "แสงสว่าง": (255, 255, 0, 200),
+            "ไม่ระบุ": (169, 169, 169, 200),  # Gray for unspecified
         }
     )
 
