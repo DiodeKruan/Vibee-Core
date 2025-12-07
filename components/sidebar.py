@@ -202,10 +202,10 @@ def render_sidebar() -> Dict:
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Category Filter section
-        st.markdown("##### Categories")
+        # Category Filter section - Chip-style multiselect
+        st.markdown("##### Ticket Types")
         
-        # Select all / Deselect all buttons
+        # Quick select buttons
         col1, col2 = st.columns(2)
         with col1:
             if st.button("Select All", use_container_width=True, key="select_all_btn"):
@@ -216,21 +216,19 @@ def render_sidebar() -> Dict:
                 st.session_state.selected_categories = []
                 st.rerun()
 
-        # Category checkboxes
-        selected = []
-        for category in settings.categories.categories:
-            color = settings.categories.colors.get(category, (100, 100, 100, 200))
-            color_hex = f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
-            
-            is_selected = st.checkbox(
-                category,
-                value=category in st.session_state.selected_categories,
-                key=f"cat_{category}",
-            )
-            if is_selected:
-                selected.append(category)
-
-        st.session_state.selected_categories = selected
+        # Chip-style multiselect for categories
+        selected_categories = st.multiselect(
+            "Filter by ticket type",
+            options=settings.categories.categories,
+            default=st.session_state.selected_categories,
+            key="category_multiselect",
+            placeholder="Search and select types...",
+            label_visibility="collapsed",
+        )
+        st.session_state.selected_categories = selected_categories
+        
+        # Show count of selected types
+        st.caption(f"{len(selected_categories)} of {len(settings.categories.categories)} types selected")
 
         st.markdown("<br>", unsafe_allow_html=True)
 

@@ -201,6 +201,30 @@ def inject_custom_css():
             border-radius: 8px;
         }
         
+        /* Multiselect chip styling */
+        [data-testid="stSidebar"] [data-testid="stMultiSelect"] > div > div {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+        }
+        
+        [data-testid="stSidebar"] [data-testid="stMultiSelect"] span[data-baseweb="tag"] {
+            background: linear-gradient(135deg, rgba(249, 115, 22, 0.2), rgba(245, 158, 11, 0.2));
+            border: 1px solid rgba(249, 115, 22, 0.4);
+            border-radius: 16px;
+            padding: 4px 8px;
+            margin: 2px;
+        }
+        
+        [data-testid="stSidebar"] [data-testid="stMultiSelect"] span[data-baseweb="tag"] span {
+            color: #f97316;
+            font-size: 12px;
+        }
+        
+        [data-testid="stSidebar"] [data-testid="stMultiSelect"] span[data-baseweb="tag"] span[role="presentation"] {
+            color: #f97316;
+        }
+        
         /* Floating chat wrapper */
         .chat-wrapper {
             background: linear-gradient(180deg, rgba(15, 15, 20, 0.96), rgba(11, 11, 16, 0.96));
@@ -401,11 +425,11 @@ def render_fullscreen_map(data: pd.DataFrame, layer_type: str, layer_params: dic
     if layer_type in ["scatter", "icon"]:
         tooltip = {
             "html": """
-                <div style="background:rgba(15,15,20,0.95);padding:12px 16px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);font-family:system-ui;max-width:260px;">
-                    <div style="color:#f97316;font-weight:600;font-size:13px;margin-bottom:6px;">{category}</div>
+                <div style="background:rgba(15,15,20,0.95);padding:12px 16px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);font-family:system-ui;max-width:280px;">
+                    <div style="color:#f97316;font-weight:600;font-size:13px;margin-bottom:6px;">{type_display}</div>
                     <div style="color:#e2e8f0;font-size:12px;line-height:1.4;">{description}</div>
                     <div style="color:#64748b;font-size:11px;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.1);">
-                        📍 {lat:.4f}, {lon:.4f}
+                        📍 {coords_display}
                     </div>
                 </div>
             """,

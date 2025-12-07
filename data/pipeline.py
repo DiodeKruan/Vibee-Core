@@ -198,6 +198,59 @@ def calculate_duration(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def format_type_display(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Format the type column for display in tooltips.
+    Replaces commas with line breaks for better readability.
+    
+    Args:
+        df: Input DataFrame with 'type' column
+        
+    Returns:
+        DataFrame with 'type_display' column added
+    """
+    df = df.copy()
+    
+    if "type" not in df.columns:
+        df["type_display"] = ""
+        return df
+    
+    def format_types(x):
+        if pd.isna(x) or x == "":
+            return ""
+        types = [t.strip() for t in str(x).split(",") if t.strip()]
+        # Join with bullet points for display
+        return " • ".join(types)
+    
+    df["type_display"] = df["type"].apply(format_types)
+    return df
+
+
+def format_coordinates(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Format lat/lon coordinates for tooltip display.
+    
+    Args:
+        df: Input DataFrame with 'lat' and 'lon' columns
+        
+    Returns:
+        DataFrame with 'coords_display' column added
+    """
+    df = df.copy()
+    
+    if "lat" not in df.columns or "lon" not in df.columns:
+        df["coords_display"] = ""
+        return df
+    
+    df["coords_display"] = df.apply(
+        lambda row: f"{row['lat']:.4f}, {row['lon']:.4f}" 
+        if pd.notna(row['lat']) and pd.notna(row['lon']) 
+        else "",
+        axis=1
+    )
+    return df
+
+
 def process_traffy_data(df: pd.DataFrame, verbose: bool = False) -> pd.DataFrame:
     """
     Process Traffy Fondue data through the complete pipeline.
@@ -211,6 +264,8 @@ def process_traffy_data(df: pd.DataFrame, verbose: bool = False) -> pd.DataFrame
     6. Add n_organizations count
     7. Remove outliers (n_organizations >= 10 OR n_types > 5)
     8. Calculate duration_hour
+    9. Format type for display (type_display column)
+    10. Format coordinates for display (coords_display column)
     
     Args:
         df: Raw DataFrame from fetch_traffy_data()
@@ -269,6 +324,16 @@ def process_traffy_data(df: pd.DataFrame, verbose: bool = False) -> pd.DataFrame
     if verbose:
         valid_duration = df["duration_hour"].notna().sum()
         print(f"After calculate_duration: {valid_duration} rows with valid duration")
+    
+    # Step 9: Format type for display
+    df = format_type_display(df)
+    if verbose:
+        print(f"After format_type_display: type_display column added")
+    
+    # Step 10: Format coordinates for display
+    df = format_coordinates(df)
+    if verbose:
+        print(f"After format_coordinates: coords_display column added")
     
     # Reset index
     df = df.reset_index(drop=True)
