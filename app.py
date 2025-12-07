@@ -5,7 +5,6 @@ Bangkok Urban Report Analytics with PyDeck Map
 
 from data.pipeline import process_traffy_data
 from data.queries import fetch_traffy_data, fetch_longdo_events
-from utils.sampling import sample_data, aggregate_to_hexagons
 from visualization.layers import create_layer
 from visualization.map_view import get_initial_view_state
 from components.chatbox import render_chatbox
@@ -360,9 +359,15 @@ def generate_demo_data(n_points: int = 5000) -> pd.DataFrame:
     lats.append(np.random.normal(cluster_centers_lat[cluster_idx], 0.02))
     lons.append(np.random.normal(cluster_centers_lon[cluster_idx], 0.02))
 
-  category_weights = [0.25, 0.15, 0.12, 0.10, 0.10, 0.08, 0.08, 0.05, 0.04, 0.03]
+  # Generate category weights matching the number of categories
+  all_categories = settings.categories.categories
+  n_categories = len(all_categories)
+  # Use exponential decay for realistic distribution (more common categories first)
+  raw_weights = np.exp(-np.arange(n_categories) * 0.15)
+  category_weights = raw_weights / raw_weights.sum()  # Normalize to sum to 1
+
   categories = np.random.choice(
-      settings.categories.categories,
+      all_categories,
       size=n_points,
       p=category_weights,
   )
@@ -429,20 +434,6 @@ def filter_data(df: pd.DataFrame, params: dict) -> pd.DataFrame:
       filtered = filtered[filtered["type"].isin(selected_event_types)]
 
   return filtered
-
-
-def prepare_data_for_layer(df: pd.DataFrame, layer_type: str, params: dict) -> pd.DataFrame:
-  """Prepare data for specific layer type."""
-  if df.empty:
-    return df
-
-  if layer_type == "scatter":
-    return sample_data(df, max_points=settings.map.max_points_scatter)
-  elif layer_type == "heatmap":
-    return sample_data(df, max_points=settings.map.max_points_heatmap)
-  elif layer_type in ["hexagon", "cluster"]:
-    return aggregate_to_hexagons(df, hex_size=params.get("hexagon_radius", 200) / 111000)
-  return df
 
 
 def render_fullscreen_map(data: pd.DataFrame, layer_type: str, layer_params: dict, data_source: str = "traffy"):
@@ -657,7 +648,6 @@ def main():
 
   # Get params
   layer_type = params.get("layer_type", "scatter")
-  viz_data = prepare_data_for_layer(filtered_df, layer_type, params)
 
   layer_params = {
       "radius": params.get("radius", settings.map.default_point_radius),
@@ -665,8 +655,10 @@ def main():
       "elevation_scale": params.get("elevation_scale", settings.map.default_elevation_scale),
   }
 
-  # Render full-screen map (this goes behind everything)
-  render_fullscreen_map(viz_data, layer_type, layer_params, data_source=data_source)
+  if layer_type == "hexagon":
+    layer_params["radius"] = params.get("hexagon_radius", settings.map.hexagon_radius)
+
+  render_fullscreen_map(filtered_df, layer_type, layer_params, data_source=data_source)
 
   # Get type count based on data source
   if data_source == "traffy":

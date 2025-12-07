@@ -11,7 +11,7 @@ from config.settings import settings
 # Default data fetch settings
 DEFAULT_DATA_DATE_FROM = date(2023, 1, 1)
 DEFAULT_DATA_DATE_TO = date(2025, 12, 31)
-DEFAULT_MAX_RECORDS = 100000
+DEFAULT_MAX_RECORDS = 50000
 MAX_RECORDS_LIMIT = 500000
 
 

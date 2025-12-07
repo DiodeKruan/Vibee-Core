@@ -1,11 +1,29 @@
 """PyDeck layer factories for different visualization types."""
 
-from typing import List
+from typing import Dict, List, Tuple
 
+import numpy as np
 import pandas as pd
 import pydeck as pdk
 
 from config.settings import settings
+
+
+# Pre-cached color mappings for O(1) vectorized lookups
+# Built once at module load, avoiding repeated dictionary access
+_TRAFFY_COLOR_MAP: Dict[str, List[int]] = {
+    k: list(v) for k, v in settings.categories.colors.items()
+}
+_LONGDO_COLOR_MAP: Dict[str, List[int]] = {
+    k: list(v) for k, v in settings.longdo.colors.items()
+}
+_DEFAULT_COLOR: List[int] = [100, 100, 100, 200]
+_DEFAULT_POINT_COLOR: List[int] = [255, 140, 0, 200]
+
+
+def _get_color_map(data_source: str) -> Dict[str, List[int]]:
+  """Get the appropriate color map for the data source."""
+  return _LONGDO_COLOR_MAP if data_source == "longdo" else _TRAFFY_COLOR_MAP
 
 
 def create_layer(
@@ -37,13 +55,6 @@ def create_layer(
   return factory(data, data_source=data_source, **kwargs)
 
 
-def get_color_for_category(category: str, data_source: str = "traffy") -> List[int]:
-  """Get RGBA color for a category based on data source."""
-  if data_source == "longdo":
-    return list(settings.longdo.colors.get(category, (100, 100, 100, 200)))
-  return list(settings.categories.colors.get(category, (100, 100, 100, 200)))
-
-
 def create_scatter_layer(
     data: pd.DataFrame,
     radius: int = 100,
@@ -72,13 +83,18 @@ def create_scatter_layer(
         get_position="[lon, lat]",
     )
 
-  # Add color based on category if available
+  # Vectorized color assignment using map() instead of slow apply()
   if "category" in data.columns:
-    data = data.copy()
-    data["color"] = data["category"].apply(lambda x: get_color_for_category(x, data_source))
+    color_map = _get_color_map(data_source)
+    # Map categories to colors - map() with dict is O(n) and vectorized
+    # Then fill missing values with default color
+    mapped_colors = data["category"].map(color_map)
+    # Fill NaN/None values with default color list
+    colors = [c if c is not None and isinstance(c, list) else _DEFAULT_COLOR
+              for c in mapped_colors]
+    data = data.assign(color=colors)
   else:
-    data = data.copy()
-    data["color"] = [[255, 140, 0, 200]] * len(data)
+    data = data.assign(color=[_DEFAULT_POINT_COLOR] * len(data))
 
   return pdk.Layer(
       "ScatterplotLayer",
@@ -233,25 +249,30 @@ def create_cluster_layer(
 
   # If count column exists, use it for sizing
   if "count" in data.columns:
-    data = data.copy()
-    # Normalize count to radius (sqrt for area-proportional sizing)
+    # Vectorized calculations using NumPy (much faster than apply())
     max_count = data["count"].max()
-    data["cluster_radius"] = (
-        (data["count"] / max_count).apply(lambda x: x ** 0.5) * radius * 3 + radius
-    )
-    # Color intensity based on count
-    data["color"] = data["count"].apply(
-        lambda c: [
-            min(255, int(200 + (c / max_count) * 55)),
-            max(0, int(140 - (c / max_count) * 100)),
-            0,
-            200,
-        ]
-    )
+    normalized = data["count"].values / max_count
+
+    # Vectorized sqrt for area-proportional sizing
+    cluster_radius = np.sqrt(normalized) * radius * 3 + radius
+
+    # Vectorized RGBA color calculation
+    r_values = np.clip(200 + normalized * 55, 0, 255).astype(np.int32)
+    g_values = np.clip(140 - normalized * 100, 0, 255).astype(np.int32)
+    # Stack into RGBA arrays and convert to list of lists
+    colors = np.column_stack([
+        r_values,
+        g_values,
+        np.zeros(len(data), dtype=np.int32),  # B = 0
+        np.full(len(data), 200, dtype=np.int32)  # A = 200
+    ]).tolist()
+
+    data = data.assign(cluster_radius=cluster_radius, color=colors)
   else:
-    data = data.copy()
-    data["cluster_radius"] = radius
-    data["color"] = [[255, 140, 0, 200]] * len(data)
+    data = data.assign(
+        cluster_radius=radius,
+        color=[_DEFAULT_POINT_COLOR] * len(data)
+    )
 
   return pdk.Layer(
       "ScatterplotLayer",
