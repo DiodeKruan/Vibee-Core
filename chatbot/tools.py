@@ -2,23 +2,14 @@
 
 import json
 from datetime import date, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 from langchain_core.tools import tool
 
 from config.settings import settings
-from data.queries import (
-    execute_flexible_query,
-    get_schema_info,
-    query_aggregation,
-    query_crosstab,
-    query_statistics,
-    query_ticket_details,
-    query_time_series,
-)
-from mcp.data_mcp import DataMCP, DataQuery
-from mcp.ui_mcp import UIMCP
+from mcp.data_mcp import DataMCP, DataQuery, DataResponse
+from mcp.ui_mcp import UIMCP, UIAction
 
 
 # Initialize MCP instances
@@ -26,6 +17,191 @@ _data_mcp = DataMCP()
 _ui_mcp = UIMCP()
 _data_mcp.connect()
 _ui_mcp.connect()
+
+
+# =============================================================================
+# Response Formatters
+# =============================================================================
+
+
+def _format_aggregation_response(response: DataResponse, group_by: str) -> str:
+    """Format aggregation query response as readable text."""
+    if not response.success:
+        return f"Error: {response.error}"
+    
+    results = response.data
+    if not results:
+        return f"No results found for group_by={group_by}."
+    
+    output_lines = [
+        f"=== Ticket Counts by {group_by.upper()} ===",
+        f"(showing {len(results)} results)",
+        "",
+    ]
+    
+    max_name_len = max(len(str(r["dimension_value"])) for r in results)
+    
+    for i, row in enumerate(results, 1):
+        name = str(row["dimension_value"])
+        count = row["count"]
+        output_lines.append(f"{i:2}. {name:<{max_name_len}} : {count:,} tickets")
+    
+    total = sum(r["count"] for r in results)
+    output_lines.extend(["", f"Total shown: {total:,} tickets"])
+    
+    return "\n".join(output_lines)
+
+
+def _format_statistics_response(response: DataResponse, title: str = "TICKET STATISTICS") -> str:
+    """Format statistics response as readable text."""
+    if not response.success:
+        return f"Error: {response.error}"
+    
+    stats = response.data
+    if "error" in stats:
+        return f"Error: {stats['error']}"
+    
+    output_lines = [
+        f"=== {title} ===",
+        "",
+        f"Total Tickets: {stats['total_tickets']:,}",
+        f"Unique Types: {stats['unique_types']}",
+        f"Unique Districts: {stats['unique_districts']}",
+        f"Unique Organizations: {stats['unique_organizations']}",
+        "",
+        "== Date Range ==",
+        f"From: {stats['date_range']['from']}",
+        f"To: {stats['date_range']['to']}",
+        "",
+        "== Resolution ==",
+        f"Completed: {stats['completed_count']:,} ({stats['completion_rate']}%)",
+        f"Pending: {stats['pending_count']:,}",
+    ]
+    
+    if stats['avg_resolution_hours']:
+        hours = stats['avg_resolution_hours']
+        if hours > 24:
+            days = hours / 24
+            output_lines.append(f"Avg Resolution Time: {days:.1f} days ({hours:.1f} hours)")
+        else:
+            output_lines.append(f"Avg Resolution Time: {hours:.1f} hours")
+    
+    return "\n".join(output_lines)
+
+
+def _format_time_series_response(response: DataResponse, granularity: str, metric: str, group_by: Optional[str] = None) -> str:
+    """Format time series response as readable text."""
+    if not response.success:
+        return f"Error: {response.error}"
+    
+    results = response.data
+    if not results:
+        return "No time series data found for the specified parameters."
+    
+    output_lines = [
+        f"=== TIME SERIES: {metric.upper()} by {granularity.upper()} ===",
+        "",
+    ]
+    
+    if group_by:
+        output_lines.append(f"Grouped by: {group_by}")
+        output_lines.append("")
+        
+        for row in results:
+            period = row.get("period", "N/A")[:10]
+            group_val = row.get("group_value", "N/A")
+            value = row.get(metric, row.get("count", 0))
+            if isinstance(value, float):
+                output_lines.append(f"{period} | {group_val}: {value:.1f}")
+            else:
+                output_lines.append(f"{period} | {group_val}: {value:,}")
+    else:
+        for row in results:
+            period = row.get("period", "N/A")[:10]
+            value = row.get(metric, row.get("count", 0))
+            if isinstance(value, float):
+                output_lines.append(f"{period}: {value:.1f}")
+            else:
+                output_lines.append(f"{period}: {value:,}")
+    
+    return "\n".join(output_lines)
+
+
+def _format_crosstab_response(response: DataResponse) -> str:
+    """Format crosstab response as readable text."""
+    if not response.success:
+        return f"Error: {response.error}"
+    
+    result = response.data
+    if not result.get("rows"):
+        return "No cross-tabulation data found for the specified dimensions."
+    
+    rows = result["rows"]
+    cols = result["columns"]
+    data = result["data"]
+    
+    output_lines = [
+        f"=== CROSSTAB: {result['row_dimension'].upper()} × {result['col_dimension'].upper()} ===",
+        f"Metric: {result['metric']}",
+        "",
+    ]
+    
+    col_width = 12
+    header = f"{'':20} | " + " | ".join(f"{str(c)[:col_width]:<{col_width}}" for c in cols)
+    output_lines.append(header)
+    output_lines.append("-" * len(header))
+    
+    for i, row_name in enumerate(rows):
+        row_values = data[i] if i < len(data) else []
+        formatted_vals = []
+        for v in row_values:
+            if isinstance(v, float):
+                formatted_vals.append(f"{v:.1f}")
+            else:
+                formatted_vals.append(f"{int(v):,}")
+        
+        row_str = f"{str(row_name)[:20]:<20} | " + " | ".join(
+            f"{v:<{col_width}}" for v in formatted_vals
+        )
+        output_lines.append(row_str)
+    
+    return "\n".join(output_lines)
+
+
+def _format_flexible_response(response: DataResponse) -> str:
+    """Format flexible query response as readable text."""
+    if not response.success:
+        return f"Error: {response.error}"
+    
+    results = response.data
+    if not results:
+        return "No results found for the query."
+    
+    output_lines = [
+        "=== QUERY RESULTS ===",
+        f"Returned {len(results)} rows",
+        "",
+    ]
+    
+    columns = list(results[0].keys())
+    
+    header = " | ".join(f"{c[:15]:<15}" for c in columns)
+    output_lines.append(header)
+    output_lines.append("-" * len(header))
+    
+    for row in results:
+        values = []
+        for c in columns:
+            v = row.get(c, "")
+            if isinstance(v, float):
+                values.append(f"{v:.2f}")
+            elif isinstance(v, int):
+                values.append(f"{v:,}")
+            else:
+                values.append(str(v)[:15])
+        output_lines.append(" | ".join(f"{v:<15}" for v in values))
+    
+    return "\n".join(output_lines)
 
 
 # =============================================================================
@@ -50,58 +226,60 @@ def get_data_schema() -> str:
     Returns:
         JSON-formatted schema information including columns, dimensions, and sample values
     """
-    try:
-        schema = get_schema_info()
-        
-        # Format as readable string
-        output_parts = [
-            "=== DATABASE SCHEMA ===",
-            f"Table: {schema['table']}",
-            f"Description: {schema['description']}",
+    query = DataQuery(query_type="schema")
+    response = _data_mcp.execute_query(query)
+    
+    if not response.success:
+        return f"Error fetching schema: {response.error}"
+    
+    schema = response.data
+    
+    output_parts = [
+        "=== DATABASE SCHEMA ===",
+        f"Table: {schema['table']}",
+        f"Description: {schema['description']}",
+        "",
+        "== Queryable Dimensions ==",
+        "Use these for group_by, filters, and analysis:",
+        ", ".join(schema['queryable_dimensions']),
+        "",
+        "== Time Granularities ==",
+        ", ".join(schema['time_granularities']),
+        "",
+        "== Spatial Filters ==",
+        "- bbox: Bounding box (min_lon, min_lat, max_lon, max_lat)",
+        "- districts: Filter by district name(s)",
+        "",
+    ]
+    
+    if "date_range" in schema:
+        dr = schema["date_range"]
+        output_parts.extend([
+            "== Data Range ==",
+            f"From: {dr.get('min')} to {dr.get('max')}",
+            f"Total records: {dr.get('total_records', 'N/A'):,}",
             "",
-            "== Queryable Dimensions ==",
-            "Use these for group_by, filters, and analysis:",
-            ", ".join(schema['queryable_dimensions']),
+        ])
+    
+    if "sample_types" in schema:
+        output_parts.extend(["== Top Ticket Types (by count) =="])
+        for item in schema["sample_types"][:10]:
+            output_parts.append(f"  - {item['value']}: {item['count']:,}")
+        output_parts.append("")
+    
+    if "sample_statuses" in schema:
+        output_parts.extend([
+            "== Available Statuses ==",
+            ", ".join(schema["sample_statuses"]),
             "",
-            "== Time Granularities ==",
-            ", ".join(schema['time_granularities']),
-            "",
-        ]
-        
-        if "date_range" in schema:
-            dr = schema["date_range"]
-            output_parts.extend([
-                "== Data Range ==",
-                f"From: {dr.get('min')} to {dr.get('max')}",
-                f"Total records: {dr.get('total_records', 'N/A'):,}",
-                "",
-            ])
-        
-        if "sample_types" in schema:
-            output_parts.extend([
-                "== Top Ticket Types (by count) ==",
-            ])
-            for item in schema["sample_types"][:10]:
-                output_parts.append(f"  - {item['value']}: {item['count']:,}")
-            output_parts.append("")
-        
-        if "sample_statuses" in schema:
-            output_parts.extend([
-                "== Available Statuses ==",
-                ", ".join(schema["sample_statuses"]),
-                "",
-            ])
-        
-        if "sample_districts" in schema:
-            output_parts.extend([
-                "== Top Districts (by count) ==",
-            ])
-            for item in schema["sample_districts"][:10]:
-                output_parts.append(f"  - {item['value']}: {item['count']:,}")
-        
-        return "\n".join(output_parts)
-    except Exception as e:
-        return f"Error fetching schema: {str(e)}"
+        ])
+    
+    if "sample_districts" in schema:
+        output_parts.extend(["== Top Districts (by count) =="])
+        for item in schema["sample_districts"][:10]:
+            output_parts.append(f"  - {item['value']}: {item['count']:,}")
+    
+    return "\n".join(output_parts)
 
 
 # =============================================================================
@@ -113,6 +291,8 @@ def get_data_schema() -> str:
 def get_ticket_counts(
     group_by: str,
     filters: Optional[str] = None,
+    districts: Optional[str] = None,
+    bbox: Optional[str] = None,
     order_by: str = "count_desc",
     limit: int = 20,
 ) -> str:
@@ -124,62 +304,57 @@ def get_ticket_counts(
     - "Which district has the most reports?" -> group_by="district"
     - "Show me pending tickets by organization" -> group_by="org", filters='{"status": "รับเรื่องแล้ว"}'
     - "How many flooding reports per district?" -> group_by="district", filters='{"type": "น้ำท่วม"}'
+    - "Count tickets in Khlong Toei" -> group_by="type", districts="คลองเตย"
+    - "Show types in this area" -> group_by="type", bbox="100.5,13.7,100.6,13.8"
     
     Args:
         group_by: Dimension to group by. Valid values: type, district, status, org, province
         filters: Optional JSON string with filters, e.g. '{"type": "ถนน"}' or '{"district": ["คลองเตย", "วัฒนา"]}'
+        districts: Optional comma-separated district names to filter by
+        bbox: Optional bounding box as "min_lon,min_lat,max_lon,max_lat"
         order_by: Sort order - count_desc (default), count_asc, name_asc, name_desc
         limit: Maximum number of results (default 20)
     
     Returns:
         Formatted table of dimension values and their counts
     """
-    try:
-        # Parse filters if provided
-        filter_dict = None
-        if filters:
-            try:
-                filter_dict = json.loads(filters)
-            except json.JSONDecodeError:
-                return f"Error: Invalid filter JSON format. Use format like: {'{\"type\": \"ถนน\"}'}"
-        
-        results = query_aggregation(
-            group_by=group_by,
-            filters=filter_dict,
-            order_by=order_by,
-            limit=limit,
-        )
-        
-        if not results:
-            return f"No results found for group_by={group_by} with given filters."
-        
-        # Format as readable table
-        output_lines = [
-            f"=== Ticket Counts by {group_by.upper()} ===",
-            f"(showing top {len(results)} results, ordered by {order_by})",
-            "",
-        ]
-        
-        # Calculate max width for alignment
-        max_name_len = max(len(str(r["dimension_value"])) for r in results)
-        
-        for i, row in enumerate(results, 1):
-            name = str(row["dimension_value"])
-            count = row["count"]
-            output_lines.append(f"{i:2}. {name:<{max_name_len}} : {count:,} tickets")
-        
-        # Add total
-        total = sum(r["count"] for r in results)
-        output_lines.extend([
-            "",
-            f"Total shown: {total:,} tickets",
-        ])
-        
-        return "\n".join(output_lines)
-    except ValueError as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        return f"Error executing aggregation: {str(e)}"
+    # Parse filters
+    filter_dict = None
+    if filters:
+        try:
+            filter_dict = json.loads(filters)
+        except json.JSONDecodeError:
+            return f"Error: Invalid filter JSON format. Use format like: {'{\"type\": \"ถนน\"}'}"
+    
+    # Parse districts
+    district_list = None
+    if districts:
+        district_list = [d.strip() for d in districts.split(",")]
+    
+    # Parse bbox
+    bbox_tuple = None
+    if bbox:
+        try:
+            parts = [float(x.strip()) for x in bbox.split(",")]
+            if len(parts) == 4:
+                bbox_tuple = tuple(parts)
+            else:
+                return "Error: bbox must have 4 values: min_lon,min_lat,max_lon,max_lat"
+        except ValueError:
+            return "Error: bbox values must be numbers"
+    
+    query = DataQuery(
+        query_type="aggregation",
+        group_by=group_by,
+        filters=filter_dict,
+        districts=district_list,
+        bbox=bbox_tuple,
+        order_by=order_by,
+        limit=limit,
+    )
+    
+    response = _data_mcp.execute_query(query)
+    return _format_aggregation_response(response, group_by)
 
 
 @tool
@@ -187,6 +362,8 @@ def get_statistics(
     dimension: Optional[str] = None,
     dimension_value: Optional[str] = None,
     filters: Optional[str] = None,
+    districts: Optional[str] = None,
+    bbox: Optional[str] = None,
 ) -> str:
     """
     Get statistical summary of tickets.
@@ -196,65 +373,59 @@ def get_statistics(
     - "What's the completion rate for road issues?" -> dimension="type", dimension_value="ถนน"
     - "Show statistics for Khlong Toei district" -> dimension="district", dimension_value="คลองเตย"
     - "What's the average resolution time?" -> No args (returns avg_resolution_hours)
+    - "Stats for this area" -> bbox="100.5,13.7,100.6,13.8"
     
     Args:
         dimension: Optional dimension to filter by (type, district, status, org)
         dimension_value: Value for the dimension filter
         filters: Optional additional JSON filters
+        districts: Optional comma-separated district names
+        bbox: Optional bounding box as "min_lon,min_lat,max_lon,max_lat"
     
     Returns:
         Statistical summary including totals, completion rates, resolution times
     """
-    try:
-        filter_dict = None
-        if filters:
-            try:
-                filter_dict = json.loads(filters)
-            except json.JSONDecodeError:
-                return "Error: Invalid filter JSON format"
-        
-        stats = query_statistics(
-            dimension=dimension,
-            dimension_value=dimension_value,
-            filters=filter_dict,
-        )
-        
-        if "error" in stats:
-            return f"Error: {stats['error']}"
-        
-        # Format output
-        title = "=== TICKET STATISTICS ==="
-        if dimension and dimension_value:
-            title = f"=== STATISTICS FOR {dimension.upper()}: {dimension_value} ==="
-        
-        output_lines = [
-            title,
-            "",
-            f"Total Tickets: {stats['total_tickets']:,}",
-            f"Unique Types: {stats['unique_types']}",
-            f"Unique Districts: {stats['unique_districts']}",
-            f"Unique Organizations: {stats['unique_organizations']}",
-            "",
-            "== Date Range ==",
-            f"From: {stats['date_range']['from']}",
-            f"To: {stats['date_range']['to']}",
-            "",
-            "== Resolution ==",
-            f"Completed: {stats['completed_count']:,} ({stats['completion_rate']}%)",
-            f"Pending: {stats['pending_count']:,}",
-        ]
-        
-        if stats['avg_resolution_hours']:
-            hours = stats['avg_resolution_hours']
-            if hours > 24:
-                days = hours / 24
-                output_lines.append(f"Avg Resolution Time: {days:.1f} days ({hours:.1f} hours)")
+    # Parse filters
+    filter_dict = None
+    if filters:
+        try:
+            filter_dict = json.loads(filters)
+        except json.JSONDecodeError:
+            return "Error: Invalid filter JSON format"
+    
+    # Parse districts
+    district_list = None
+    if districts:
+        district_list = [d.strip() for d in districts.split(",")]
+    
+    # Parse bbox
+    bbox_tuple = None
+    if bbox:
+        try:
+            parts = [float(x.strip()) for x in bbox.split(",")]
+            if len(parts) == 4:
+                bbox_tuple = tuple(parts)
             else:
-                output_lines.append(f"Avg Resolution Time: {hours:.1f} hours")
-        
-        return "\n".join(output_lines)
-    except Exception as e:
-        return f"Error fetching statistics: {str(e)}"
+                return "Error: bbox must have 4 values: min_lon,min_lat,max_lon,max_lat"
+        except ValueError:
+            return "Error: bbox values must be numbers"
+    
+    query = DataQuery(
+        query_type="statistics",
+        dimension=dimension,
+        dimension_value=dimension_value,
+        filters=filter_dict,
+        districts=district_list,
+        bbox=bbox_tuple,
+    )
+    
+    response = _data_mcp.execute_query(query)
+    
+    title = "TICKET STATISTICS"
+    if dimension and dimension_value:
+        title = f"STATISTICS FOR {dimension.upper()}: {dimension_value}"
+    
+    return _format_statistics_response(response, title)
 
 
 # =============================================================================
@@ -268,6 +439,8 @@ def get_time_series(
     metric: str = "count",
     group_by: Optional[str] = None,
     filters: Optional[str] = None,
+    districts: Optional[str] = None,
+    bbox: Optional[str] = None,
     days_back: int = 30,
     limit: int = 50,
 ) -> str:
@@ -280,77 +453,60 @@ def get_time_series(
     - "How has flooding reports changed over time?" -> filters='{"type": "น้ำท่วม"}'
     - "Compare ticket trends by type" -> group_by="type"
     - "What's the trend of resolution time?" -> metric="avg_resolution_hours"
+    - "Daily trend in Khlong Toei" -> districts="คลองเตย"
     
     Args:
         granularity: Time bucket - hour, day, week, month, year (default: day)
         metric: What to measure - count (default), avg_resolution_hours
         group_by: Optional dimension to break down by (type, district, status, org)
         filters: Optional JSON string with filters
+        districts: Optional comma-separated district names
+        bbox: Optional bounding box as "min_lon,min_lat,max_lon,max_lat"
         days_back: How many days to look back (default 30)
         limit: Maximum number of time periods to return (default 50)
     
     Returns:
         Time series data formatted as a table
     """
-    try:
-        filter_dict = None
-        if filters:
-            try:
-                filter_dict = json.loads(filters)
-            except json.JSONDecodeError:
-                return "Error: Invalid filter JSON format"
-        
-        date_from = date.today() - timedelta(days=days_back)
-        date_to = date.today()
-        
-        results = query_time_series(
-            granularity=granularity,
-            metric=metric,
-            group_by=group_by,
-            filters=filter_dict,
-            date_from=date_from,
-            date_to=date_to,
-            limit=limit,
-        )
-        
-        if not results:
-            return f"No time series data found for the specified parameters."
-        
-        # Format output
-        output_lines = [
-            f"=== TIME SERIES: {metric.upper()} by {granularity.upper()} ===",
-            f"Period: {date_from} to {date_to}",
-            "",
-        ]
-        
-        if group_by:
-            # Grouped time series
-            output_lines.append(f"Grouped by: {group_by}")
-            output_lines.append("")
-            
-            for row in results[:limit]:
-                period = row.get("period", "N/A")[:10]  # Truncate timestamp
-                group_val = row.get("group_value", "N/A")
-                value = row.get(metric, row.get("count", 0))
-                if isinstance(value, float):
-                    output_lines.append(f"{period} | {group_val}: {value:.1f}")
-                else:
-                    output_lines.append(f"{period} | {group_val}: {value:,}")
-        else:
-            # Simple time series
-            for row in results[:limit]:
-                period = row.get("period", "N/A")[:10]
-                value = row.get(metric, row.get("count", 0))
-                if isinstance(value, float):
-                    output_lines.append(f"{period}: {value:.1f}")
-                else:
-                    output_lines.append(f"{period}: {value:,}")
-        
-        return "\n".join(output_lines)
-    except ValueError as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        return f"Error executing time series query: {str(e)}"
+    # Parse filters
+    filter_dict = None
+    if filters:
+        try:
+            filter_dict = json.loads(filters)
+        except json.JSONDecodeError:
+            return "Error: Invalid filter JSON format"
+    
+    # Parse districts
+    district_list = None
+    if districts:
+        district_list = [d.strip() for d in districts.split(",")]
+    
+    # Parse bbox
+    bbox_tuple = None
+    if bbox:
+        try:
+            parts = [float(x.strip()) for x in bbox.split(",")]
+            if len(parts) == 4:
+                bbox_tuple = tuple(parts)
+            else:
+                return "Error: bbox must have 4 values"
+        except ValueError:
+            return "Error: bbox values must be numbers"
+    
+    query = DataQuery(
+        query_type="time_series",
+        granularity=granularity,
+        metric=metric,
+        group_by=group_by,
+        filters=filter_dict,
+        districts=district_list,
+        bbox=bbox_tuple,
+        days_back=days_back,
+        limit=limit,
+    )
+    
+    response = _data_mcp.execute_query(query)
+    return _format_time_series_response(response, granularity, metric, group_by)
 
 
 # =============================================================================
@@ -364,6 +520,7 @@ def get_crosstab(
     col_dimension: str,
     metric: str = "count",
     filters: Optional[str] = None,
+    bbox: Optional[str] = None,
 ) -> str:
     """
     Get cross-tabulation of two dimensions.
@@ -379,65 +536,42 @@ def get_crosstab(
         col_dimension: Dimension for columns (district, type, org, status)  
         metric: What to measure - count (default), avg_resolution_hours
         filters: Optional JSON string with filters
+        bbox: Optional bounding box as "min_lon,min_lat,max_lon,max_lat"
     
     Returns:
         Cross-tabulation table showing relationships between two dimensions
     """
-    try:
-        filter_dict = None
-        if filters:
-            try:
-                filter_dict = json.loads(filters)
-            except json.JSONDecodeError:
-                return "Error: Invalid filter JSON format"
-        
-        result = query_crosstab(
-            row_dimension=row_dimension,
-            col_dimension=col_dimension,
-            metric=metric,
-            filters=filter_dict,
-        )
-        
-        if not result.get("rows"):
-            return "No cross-tabulation data found for the specified dimensions."
-        
-        # Format as a readable table
-        rows = result["rows"]
-        cols = result["columns"]
-        data = result["data"]
-        
-        output_lines = [
-            f"=== CROSSTAB: {row_dimension.upper()} × {col_dimension.upper()} ===",
-            f"Metric: {metric}",
-            "",
-        ]
-        
-        # Create header row
-        col_width = 12
-        header = f"{'':20} | " + " | ".join(f"{str(c)[:col_width]:<{col_width}}" for c in cols)
-        output_lines.append(header)
-        output_lines.append("-" * len(header))
-        
-        # Data rows
-        for i, row_name in enumerate(rows):
-            row_values = data[i] if i < len(data) else []
-            formatted_vals = []
-            for v in row_values:
-                if isinstance(v, float):
-                    formatted_vals.append(f"{v:.1f}")
-                else:
-                    formatted_vals.append(f"{int(v):,}")
-            
-            row_str = f"{str(row_name)[:20]:<20} | " + " | ".join(
-                f"{v:<{col_width}}" for v in formatted_vals
-            )
-            output_lines.append(row_str)
-        
-        return "\n".join(output_lines)
-    except ValueError as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        return f"Error executing crosstab query: {str(e)}"
+    # Parse filters
+    filter_dict = None
+    if filters:
+        try:
+            filter_dict = json.loads(filters)
+        except json.JSONDecodeError:
+            return "Error: Invalid filter JSON format"
+    
+    # Parse bbox
+    bbox_tuple = None
+    if bbox:
+        try:
+            parts = [float(x.strip()) for x in bbox.split(",")]
+            if len(parts) == 4:
+                bbox_tuple = tuple(parts)
+            else:
+                return "Error: bbox must have 4 values"
+        except ValueError:
+            return "Error: bbox values must be numbers"
+    
+    query = DataQuery(
+        query_type="crosstab",
+        row_dimension=row_dimension,
+        col_dimension=col_dimension,
+        metric=metric,
+        filters=filter_dict,
+        bbox=bbox_tuple,
+    )
+    
+    response = _data_mcp.execute_query(query)
+    return _format_crosstab_response(response)
 
 
 # =============================================================================
@@ -452,6 +586,7 @@ def run_analytical_query(
     filters: Optional[str] = None,
     group_by: Optional[str] = None,
     order_by: Optional[str] = None,
+    bbox: Optional[str] = None,
     limit: int = 50,
 ) -> str:
     """
@@ -469,6 +604,7 @@ def run_analytical_query(
         filters: JSON object with filters, e.g. '{"type": ["ถนน", "น้ำท่วม"], "date_from": "2024-01-01"}'
         group_by: Comma-separated columns to group by
         order_by: Order expression, e.g. "count DESC" or "total ASC"
+        bbox: Optional bounding box as "min_lon,min_lat,max_lon,max_lat"
         limit: Maximum results (default 50)
     
     Returns:
@@ -480,74 +616,48 @@ def run_analytical_query(
         group_by="type, district"
         order_by="total DESC"
     """
-    try:
-        # Parse inputs
-        cols = [c.strip() for c in select_columns.split(",")]
-        
-        agg_list = None
-        if aggregations:
-            try:
-                agg_list = json.loads(aggregations)
-            except json.JSONDecodeError:
-                return "Error: Invalid aggregations JSON format"
-        
-        filter_dict = None
-        if filters:
-            try:
-                filter_dict = json.loads(filters)
-            except json.JSONDecodeError:
-                return "Error: Invalid filters JSON format"
-        
-        group_list = None
-        if group_by:
-            group_list = [g.strip() for g in group_by.split(",")]
-        
-        results = execute_flexible_query(
-            select_columns=cols,
-            aggregations=agg_list,
-            filters=filter_dict,
-            group_by=group_list,
-            order_by=order_by,
-            limit=limit,
-        )
-        
-        if not results:
-            return "No results found for the query."
-        
-        # Format output
-        output_lines = [
-            "=== QUERY RESULTS ===",
-            f"Returned {len(results)} rows",
-            "",
-        ]
-        
-        # Get column names from first result
-        if results:
-            columns = list(results[0].keys())
-            
-            # Create header
-            header = " | ".join(f"{c[:15]:<15}" for c in columns)
-            output_lines.append(header)
-            output_lines.append("-" * len(header))
-            
-            # Data rows
-            for row in results:
-                values = []
-                for c in columns:
-                    v = row.get(c, "")
-                    if isinstance(v, float):
-                        values.append(f"{v:.2f}")
-                    elif isinstance(v, int):
-                        values.append(f"{v:,}")
-                    else:
-                        values.append(str(v)[:15])
-                output_lines.append(" | ".join(f"{v:<15}" for v in values))
-        
-        return "\n".join(output_lines)
-    except ValueError as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        return f"Error executing query: {str(e)}"
+    # Parse inputs
+    cols = [c.strip() for c in select_columns.split(",")]
+    
+    agg_list = None
+    if aggregations:
+        try:
+            agg_list = json.loads(aggregations)
+        except json.JSONDecodeError:
+            return "Error: Invalid aggregations JSON format"
+    
+    filter_dict = None
+    if filters:
+        try:
+            filter_dict = json.loads(filters)
+        except json.JSONDecodeError:
+            return "Error: Invalid filters JSON format"
+    
+    # Parse bbox
+    bbox_tuple = None
+    if bbox:
+        try:
+            parts = [float(x.strip()) for x in bbox.split(",")]
+            if len(parts) == 4:
+                bbox_tuple = tuple(parts)
+            else:
+                return "Error: bbox must have 4 values"
+        except ValueError:
+            return "Error: bbox values must be numbers"
+    
+    query = DataQuery(
+        query_type="flexible",
+        select_columns=cols,
+        aggregations=agg_list,
+        filters=filter_dict,
+        group_by=group_by,
+        order_by=order_by,
+        bbox=bbox_tuple,
+        limit=limit,
+    )
+    
+    response = _data_mcp.execute_query(query)
+    return _format_flexible_response(response)
 
 
 # =============================================================================
@@ -568,86 +678,217 @@ def get_ticket_detail(ticket_id: str) -> str:
     Returns:
         Detailed ticket information including description, location, status
     """
-    try:
-        details = query_ticket_details(ticket_id)
-        
-        if not details:
-            return f"No ticket found with ID: {ticket_id}"
-        
-        output_lines = [
-            f"=== TICKET DETAILS: {ticket_id} ===",
-            "",
-            f"Type: {details.get('type', 'N/A')}",
-            f"Status: {details.get('status', 'N/A')}",
-            f"District: {details.get('district', 'N/A')}",
-            f"Province: {details.get('province', 'N/A')}",
-            f"Organization: {details.get('organization', 'N/A')}",
-            "",
-            f"Created: {details.get('created_at', 'N/A')}",
-            f"Last Activity: {details.get('last_activity', 'N/A')}",
-            "",
-            f"Address: {details.get('address', 'N/A')}",
-            f"Coordinates: {details.get('lat', 'N/A')}, {details.get('lon', 'N/A')}",
-            "",
-            "Description:",
-            details.get('description', 'N/A')[:500],  # Truncate long descriptions
-        ]
-        
-        if details.get('photo_url'):
-            output_lines.extend(["", f"Photo: {details['photo_url']}"])
-        
-        return "\n".join(output_lines)
-    except Exception as e:
-        return f"Error fetching ticket details: {str(e)}"
-
-
-# =============================================================================
-# Legacy Data Tools (kept for backward compatibility)
-# =============================================================================
-
-
-@tool
-def get_report_summary(
-    categories: Optional[List[str]] = None,
-    days_back: int = 30,
-) -> str:
-    """
-    Get summary statistics about urban reports.
-    
-    Use this to answer questions like "How many reports are there?" or 
-    "What's the total count of road reports?"
-    
-    Args:
-        categories: Optional list of categories to filter by. 
-                   Available: PM2.5, กีดขวาง, การเดินทาง, คนจรจัด, คลอง, ความปลอดภัย, 
-                   ความสะอาด, จราจร, ต้นไม้, ถนน, ทางเท้า, ท่อระบายน้ำ, น้ำท่วม, ป้าย, 
-                   ป้ายจราจร, ร้องเรียน, สอบถาม, สะพาน, สัตว์จรจัด, สายไฟ, ห้องน้ำ, 
-                   เสนอแนะ, เสียงรบกวน, แสงสว่าง, ไม่ระบุ
-        days_back: Number of days to look back (default 30)
-    
-    Returns:
-        Summary statistics as a formatted string
-    """
     query = DataQuery(
-        query_type="summary",
-        categories=categories,
-        date_from=date.today() - timedelta(days=days_back),
-        date_to=date.today(),
+        query_type="ticket_detail",
+        ticket_id=ticket_id,
     )
+    
     response = _data_mcp.execute_query(query)
     
     if not response.success:
         return f"Error: {response.error}"
     
-    summary = response.summary or {}
-    cat_filter = f" for {', '.join(categories)}" if categories else ""
+    details = response.data
     
-    return (
-        f"Report Summary{cat_filter}:\n"
-        f"- Total reports: {summary.get('total_reports', 'N/A'):,}\n"
-        f"- Categories included: {summary.get('categories', 'N/A')}\n"
-        f"- Date range: {summary.get('date_range', 'N/A')}"
+    output_lines = [
+        f"=== TICKET DETAILS: {ticket_id} ===",
+        "",
+        f"Type: {details.get('type', 'N/A')}",
+        f"Status: {details.get('status', 'N/A')}",
+        f"District: {details.get('district', 'N/A')}",
+        f"Province: {details.get('province', 'N/A')}",
+        f"Organization: {details.get('organization', 'N/A')}",
+        "",
+        f"Created: {details.get('created_at', 'N/A')}",
+        f"Last Activity: {details.get('last_activity', 'N/A')}",
+        "",
+        f"Address: {details.get('address', 'N/A')}",
+        f"Coordinates: {details.get('lat', 'N/A')}, {details.get('lon', 'N/A')}",
+        "",
+        "Description:",
+        str(details.get('description', 'N/A'))[:500],
+    ]
+    
+    if details.get('photo_url'):
+        output_lines.extend(["", f"Photo: {details['photo_url']}"])
+    
+    return "\n".join(output_lines)
+
+
+# =============================================================================
+# Spatial Filter Tools
+# =============================================================================
+
+
+@tool
+def filter_by_district(districts: str) -> str:
+    """
+    Get ticket data filtered by specific Bangkok district(s).
+    
+    Use when user wants to see data for specific districts, like:
+    - "Show me reports from Khlong Toei"
+    - "What's happening in Bang Rak and Pathum Wan?"
+    
+    Args:
+        districts: Comma-separated district names (Thai), e.g. "คลองเตย" or "คลองเตย,บางรัก,ปทุมวัน"
+    
+    Returns:
+        Summary statistics for the specified district(s)
+    """
+    district_list = [d.strip() for d in districts.split(",")]
+    
+    query = DataQuery(
+        query_type="statistics",
+        districts=district_list,
     )
+    
+    response = _data_mcp.execute_query(query)
+    
+    title = f"STATISTICS FOR DISTRICT(S): {', '.join(district_list)}"
+    return _format_statistics_response(response, title)
+
+
+@tool
+def filter_by_bounding_box(
+    min_lon: float,
+    min_lat: float,
+    max_lon: float,
+    max_lat: float,
+) -> str:
+    """
+    Get ticket data filtered by a geographic bounding box area.
+    
+    Use when user wants to see data in a specific map area, like:
+    - "Show me reports in this area" (after getting coordinates)
+    - "What issues are near Siam Paragon?" (use known coordinates)
+    
+    Args:
+        min_lon: Minimum longitude (west boundary), e.g. 100.52
+        min_lat: Minimum latitude (south boundary), e.g. 13.72
+        max_lon: Maximum longitude (east boundary), e.g. 100.56
+        max_lat: Maximum latitude (north boundary), e.g. 13.76
+    
+    Returns:
+        Summary statistics for tickets within the bounding box
+    """
+    bbox = (min_lon, min_lat, max_lon, max_lat)
+    
+    query = DataQuery(
+        query_type="statistics",
+        bbox=bbox,
+    )
+    
+    response = _data_mcp.execute_query(query)
+    
+    title = f"STATISTICS FOR AREA ({min_lon:.4f},{min_lat:.4f}) to ({max_lon:.4f},{max_lat:.4f})"
+    return _format_statistics_response(response, title)
+
+
+@tool
+def get_tickets_in_area(
+    min_lon: float,
+    min_lat: float,
+    max_lon: float,
+    max_lat: float,
+    categories: Optional[str] = None,
+    limit: int = 100,
+) -> str:
+    """
+    Get list of tickets within a geographic bounding box.
+    
+    Use when user wants to see specific tickets in an area, like:
+    - "List the tickets near me"
+    - "What flooding reports are in this area?"
+    
+    Args:
+        min_lon: Minimum longitude (west boundary)
+        min_lat: Minimum latitude (south boundary)
+        max_lon: Maximum longitude (east boundary)
+        max_lat: Maximum latitude (north boundary)
+        categories: Optional comma-separated category types to filter
+        limit: Maximum tickets to return (default 100)
+    
+    Returns:
+        List of tickets in the area with basic details
+    """
+    from data.queries import query_by_bbox
+    
+    bbox = (min_lon, min_lat, max_lon, max_lat)
+    
+    category_list = None
+    if categories:
+        category_list = [c.strip() for c in categories.split(",")]
+    
+    try:
+        results = query_by_bbox(
+            bbox=bbox,
+            categories=category_list,
+            limit=limit,
+        )
+        
+        if not results:
+            return f"No tickets found in the area ({min_lon:.4f},{min_lat:.4f}) to ({max_lon:.4f},{max_lat:.4f})"
+        
+        output_lines = [
+            f"=== TICKETS IN AREA ===",
+            f"Bounding box: ({min_lon:.4f},{min_lat:.4f}) to ({max_lon:.4f},{max_lat:.4f})",
+            f"Found: {len(results)} tickets",
+            "",
+        ]
+        
+        for i, ticket in enumerate(results[:20], 1):
+            output_lines.append(
+                f"{i}. [{ticket.get('ticket_id', 'N/A')}] {ticket.get('type', 'N/A')} - "
+                f"{ticket.get('status', 'N/A')} ({ticket.get('district', 'N/A')})"
+            )
+        
+        if len(results) > 20:
+            output_lines.append(f"... and {len(results) - 20} more tickets")
+        
+        return "\n".join(output_lines)
+    
+    except Exception as e:
+        return f"Error fetching tickets: {str(e)}"
+
+
+@tool
+def get_available_districts() -> str:
+    """
+    Get list of all available Bangkok districts and their ticket counts.
+    
+    Use when user wants to know what districts are available, like:
+    - "What districts are available?"
+    - "List all districts"
+    
+    Returns:
+        List of districts with their ticket counts
+    """
+    from data.queries import get_available_districts as fetch_districts
+    
+    try:
+        districts = fetch_districts()
+        
+        if not districts:
+            return "No districts found in the database."
+        
+        output_lines = [
+            "=== AVAILABLE DISTRICTS ===",
+            f"Total: {len(districts)} districts",
+            "",
+        ]
+        
+        for i, d in enumerate(districts, 1):
+            output_lines.append(f"{i:2}. {d['district']}: {d['count']:,} tickets")
+        
+        return "\n".join(output_lines)
+    
+    except Exception as e:
+        return f"Error fetching districts: {str(e)}"
+
+
+# =============================================================================
+# Legacy Data Tools (kept for backward compatibility)
+# =============================================================================
 
 
 @tool
@@ -664,39 +905,6 @@ def get_available_categories() -> str:
     categories = settings.categories.categories
     return f"Available categories ({len(categories)} total):\n" + "\n".join(
         f"- {cat}" for cat in categories
-    )
-
-
-@tool
-def get_current_data_stats() -> str:
-    """
-    Get statistics about the currently loaded dataset.
-    
-    Use this to answer questions about what data is currently visible on the map.
-    
-    Returns:
-        Statistics about the current dataset
-    """
-    df = st.session_state.get("traffy_data")
-    if df is None or df.empty:
-        return "No data currently loaded."
-    
-    total = len(df)
-    
-    # Get category counts if available
-    cat_col = "category" if "category" in df.columns else "type"
-    if cat_col in df.columns:
-        top_cats = df[cat_col].value_counts().head(5)
-        top_cats_str = "\n".join(
-            f"  - {cat}: {count:,}" for cat, count in top_cats.items()
-        )
-    else:
-        top_cats_str = "  (category data not available)"
-    
-    return (
-        f"Currently loaded data:\n"
-        f"- Total records: {total:,}\n"
-        f"- Top 5 categories:\n{top_cats_str}"
     )
 
 
@@ -758,7 +966,6 @@ def filter_categories(categories: List[str]) -> str:
             f"Use get_available_categories to see valid options."
         )
     
-    from mcp.ui_mcp import UIAction
     response = _ui_mcp.execute_action(
         UIAction(action_type="set_categories", params={"categories": valid})
     )
@@ -782,7 +989,6 @@ def set_layer_opacity(opacity: float) -> str:
     Returns:
         Confirmation message
     """
-    from mcp.ui_mcp import UIAction
     response = _ui_mcp.execute_action(
         UIAction(action_type="set_opacity", params={"opacity": opacity})
     )
@@ -807,7 +1013,6 @@ def set_point_radius(radius: int) -> str:
     Returns:
         Confirmation message
     """
-    from mcp.ui_mcp import UIAction
     response = _ui_mcp.execute_action(
         UIAction(action_type="set_radius", params={"radius": radius})
     )
@@ -828,7 +1033,6 @@ def reset_all_filters() -> str:
     Returns:
         Confirmation message
     """
-    from mcp.ui_mcp import UIAction
     response = _ui_mcp.execute_action(UIAction(action_type="reset_filters"))
     
     if response.success:
@@ -964,14 +1168,13 @@ def zoom_to_district(district: str) -> str:
         return f"District '{district}' not found. Try Thai names like คลองเตย, บางรัก, ปทุมวัน."
     
     # Update map view state
-    from mcp.ui_mcp import UIAction
     response = _ui_mcp.execute_action(
         UIAction(
             action_type="set_view",
             params={
                 "latitude": coords[0],
                 "longitude": coords[1],
-                "zoom_delta": 3,  # Zoom in
+                "zoom_delta": 3,
             }
         )
     )
@@ -1008,8 +1211,8 @@ def set_date_filter(days_back: int = 30) -> str:
 # Tool Collections
 # =============================================================================
 
-# New analytical data tools
-analytical_tools = [
+# Data tools (analytical)
+data_tools = [
     get_data_schema,
     get_ticket_counts,
     get_statistics,
@@ -1017,17 +1220,20 @@ analytical_tools = [
     get_crosstab,
     run_analytical_query,
     get_ticket_detail,
-]
-
-# Legacy data tools (kept for backward compatibility)
-legacy_data_tools = [
-    get_report_summary,
     get_available_categories,
-    get_current_data_stats,
 ]
 
-# All data tools
-data_tools = analytical_tools + legacy_data_tools
+# Backward compatibility aliases
+analytical_tools = data_tools
+legacy_data_tools: List[Any] = []
+
+# Spatial filter tools
+spatial_tools = [
+    filter_by_district,
+    filter_by_bounding_box,
+    get_tickets_in_area,
+    get_available_districts,
+]
 
 # UI tools
 ui_tools = [
@@ -1043,5 +1249,4 @@ ui_tools = [
 ]
 
 # Combined tool list for agent
-all_tools = data_tools + ui_tools
-
+all_tools = data_tools + spatial_tools + ui_tools

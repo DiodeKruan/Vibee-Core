@@ -9,11 +9,58 @@ import streamlit as st
 from config.settings import settings
 from .database import get_cursor
 
+
+# =============================================================================
+# Helper Functions for Spatial Filtering
+# =============================================================================
+
+def _build_bbox_condition(bbox: Optional[Tuple[float, float, float, float]]) -> Tuple[str, List[Any]]:
+    """
+    Build a PostGIS bounding box condition.
+    
+    Args:
+        bbox: Tuple of (min_lon, min_lat, max_lon, max_lat)
+        
+    Returns:
+        Tuple of (condition_string, params_list)
+    """
+    if not bbox:
+        return "", []
+    
+    min_lon, min_lat, max_lon, max_lat = bbox
+    condition = "ST_Within(location::geometry, ST_MakeEnvelope(%s, %s, %s, %s, 4326))"
+    return condition, [min_lon, min_lat, max_lon, max_lat]
+
+
+def _build_districts_condition(districts: Optional[List[str]]) -> Tuple[str, List[Any]]:
+    """
+    Build a district filter condition.
+    
+    Args:
+        districts: List of district names
+        
+    Returns:
+        Tuple of (condition_string, params_list)
+    """
+    if not districts:
+        return "", []
+    
+    placeholders = ",".join(["%s"] * len(districts))
+    condition = f"district IN ({placeholders})"
+    return condition, districts
+
+
+# =============================================================================
+# Main Data Fetch Function
+# =============================================================================
+
 @st.cache_data(ttl=settings.cache_ttl_seconds)
 def fetch_traffy_data(
     categories: Optional[List[str]] = None,
+    districts: Optional[List[str]] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    bbox: Optional[Tuple[float, float, float, float]] = None,
     limit: int = 100000,
 ) -> pd.DataFrame:
     """
@@ -21,8 +68,10 @@ def fetch_traffy_data(
 
     Args:
         categories: List of category types to filter
+        districts: List of district names to filter
         date_from: Start date filter
         date_to: End date filter
+        bbox: Bounding box tuple (min_lon, min_lat, max_lon, max_lat)
         limit: Maximum number of records to return
 
     Returns:
@@ -37,6 +86,12 @@ def fetch_traffy_data(
         conditions.append(f"type IN ({placeholders})")
         params.extend(categories)
 
+    # District filter
+    district_cond, district_params = _build_districts_condition(districts)
+    if district_cond:
+        conditions.append(district_cond)
+        params.extend(district_params)
+
     # Date filters
     if date_from:
         conditions.append("timestamp >= %s")
@@ -45,6 +100,12 @@ def fetch_traffy_data(
     if date_to:
         conditions.append("timestamp <= %s")
         params.append(date_to)
+
+    # Bounding box filter
+    bbox_cond, bbox_params = _build_bbox_condition(bbox)
+    if bbox_cond:
+        conditions.append(bbox_cond)
+        params.extend(bbox_params)
 
     where_clause = " AND ".join(conditions)
 
@@ -157,6 +218,10 @@ def get_schema_info() -> Dict[str, Any]:
         },
         "queryable_dimensions": list(VALID_DIMENSIONS.keys()),
         "time_granularities": VALID_TIME_GRANULARITIES,
+        "spatial_filters": {
+            "bbox": "Bounding box filter (min_lon, min_lat, max_lon, max_lat)",
+            "districts": "Filter by district name(s)",
+        },
     }
     
     # Fetch sample values for key dimensions
@@ -224,6 +289,7 @@ def query_aggregation(
     filters: Optional[Dict[str, Any]] = None,
     order_by: str = "count_desc",
     limit: int = 20,
+    bbox: Optional[Tuple[float, float, float, float]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Execute an aggregation query grouped by a dimension.
@@ -233,6 +299,7 @@ def query_aggregation(
         filters: Optional filters {dimension: value or [values]}
         order_by: Sort order (count_desc, count_asc, name_asc, name_desc)
         limit: Maximum results to return
+        bbox: Bounding box tuple (min_lon, min_lat, max_lon, max_lat)
         
     Returns:
         List of {dimension_value, count} dictionaries
@@ -250,16 +317,29 @@ def query_aggregation(
     # Apply filters
     if filters:
         for dim, value in filters.items():
-            if dim not in VALID_DIMENSIONS:
-                continue
-            filter_col = VALID_DIMENSIONS[dim]
-            if isinstance(value, list):
-                placeholders = ",".join(["%s"] * len(value))
-                conditions.append(f"{filter_col} IN ({placeholders})")
-                params.extend(value)
-            else:
-                conditions.append(f"{filter_col} = %s")
+            if dim == "date_from":
+                conditions.append("timestamp >= %s")
                 params.append(value)
+            elif dim == "date_to":
+                conditions.append("timestamp <= %s")
+                params.append(value)
+            elif dim not in VALID_DIMENSIONS:
+                continue
+            else:
+                filter_col = VALID_DIMENSIONS[dim]
+                if isinstance(value, list):
+                    placeholders = ",".join(["%s"] * len(value))
+                    conditions.append(f"{filter_col} IN ({placeholders})")
+                    params.extend(value)
+                else:
+                    conditions.append(f"{filter_col} = %s")
+                    params.append(value)
+    
+    # Bounding box filter
+    bbox_cond, bbox_params = _build_bbox_condition(bbox)
+    if bbox_cond:
+        conditions.append(bbox_cond)
+        params.extend(bbox_params)
     
     where_clause = " AND ".join(conditions)
     
@@ -301,6 +381,7 @@ def query_time_series(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     limit: int = 100,
+    bbox: Optional[Tuple[float, float, float, float]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Execute a time series query.
@@ -313,6 +394,7 @@ def query_time_series(
         date_from: Start date
         date_to: End date
         limit: Maximum results
+        bbox: Bounding box tuple (min_lon, min_lat, max_lon, max_lat)
         
     Returns:
         List of time-series data points
@@ -343,16 +425,29 @@ def query_time_series(
     # Apply dimension filters
     if filters:
         for dim, value in filters.items():
-            if dim not in VALID_DIMENSIONS:
-                continue
-            filter_col = VALID_DIMENSIONS[dim]
-            if isinstance(value, list):
-                placeholders = ",".join(["%s"] * len(value))
-                conditions.append(f"{filter_col} IN ({placeholders})")
-                params.extend(value)
-            else:
-                conditions.append(f"{filter_col} = %s")
+            if dim == "date_from":
+                conditions.append("timestamp >= %s")
                 params.append(value)
+            elif dim == "date_to":
+                conditions.append("timestamp <= %s")
+                params.append(value)
+            elif dim not in VALID_DIMENSIONS:
+                continue
+            else:
+                filter_col = VALID_DIMENSIONS[dim]
+                if isinstance(value, list):
+                    placeholders = ",".join(["%s"] * len(value))
+                    conditions.append(f"{filter_col} IN ({placeholders})")
+                    params.extend(value)
+                else:
+                    conditions.append(f"{filter_col} = %s")
+                    params.append(value)
+    
+    # Bounding box filter
+    bbox_cond, bbox_params = _build_bbox_condition(bbox)
+    if bbox_cond:
+        conditions.append(bbox_cond)
+        params.extend(bbox_params)
     
     where_clause = " AND ".join(conditions)
     
@@ -408,6 +503,7 @@ def query_crosstab(
     filters: Optional[Dict[str, Any]] = None,
     row_limit: int = 15,
     col_limit: int = 10,
+    bbox: Optional[Tuple[float, float, float, float]] = None,
 ) -> Dict[str, Any]:
     """
     Execute a cross-tabulation query.
@@ -419,6 +515,7 @@ def query_crosstab(
         filters: Optional filters
         row_limit: Max rows to return
         col_limit: Max columns to return
+        bbox: Bounding box tuple (min_lon, min_lat, max_lon, max_lat)
         
     Returns:
         Dictionary with rows, columns, and data matrix
@@ -436,16 +533,29 @@ def query_crosstab(
     
     if filters:
         for dim, value in filters.items():
-            if dim not in VALID_DIMENSIONS:
-                continue
-            filter_col = VALID_DIMENSIONS[dim]
-            if isinstance(value, list):
-                placeholders = ",".join(["%s"] * len(value))
-                conditions.append(f"{filter_col} IN ({placeholders})")
-                params.extend(value)
-            else:
-                conditions.append(f"{filter_col} = %s")
+            if dim == "date_from":
+                conditions.append("timestamp >= %s")
                 params.append(value)
+            elif dim == "date_to":
+                conditions.append("timestamp <= %s")
+                params.append(value)
+            elif dim not in VALID_DIMENSIONS:
+                continue
+            else:
+                filter_col = VALID_DIMENSIONS[dim]
+                if isinstance(value, list):
+                    placeholders = ",".join(["%s"] * len(value))
+                    conditions.append(f"{filter_col} IN ({placeholders})")
+                    params.extend(value)
+                else:
+                    conditions.append(f"{filter_col} = %s")
+                    params.append(value)
+    
+    # Bounding box filter
+    bbox_cond, bbox_params = _build_bbox_condition(bbox)
+    if bbox_cond:
+        conditions.append(bbox_cond)
+        params.extend(bbox_params)
     
     where_clause = " AND ".join(conditions)
     
@@ -516,6 +626,7 @@ def query_statistics(
     dimension: Optional[str] = None,
     dimension_value: Optional[str] = None,
     filters: Optional[Dict[str, Any]] = None,
+    bbox: Optional[Tuple[float, float, float, float]] = None,
 ) -> Dict[str, Any]:
     """
     Get statistical summary of tickets.
@@ -524,6 +635,7 @@ def query_statistics(
         dimension: Optional dimension to filter by
         dimension_value: Value for the dimension filter
         filters: Additional filters
+        bbox: Bounding box tuple (min_lon, min_lat, max_lon, max_lat)
         
     Returns:
         Dictionary with statistics
@@ -538,16 +650,29 @@ def query_statistics(
     
     if filters:
         for dim, value in filters.items():
-            if dim not in VALID_DIMENSIONS:
-                continue
-            filter_col = VALID_DIMENSIONS[dim]
-            if isinstance(value, list):
-                placeholders = ",".join(["%s"] * len(value))
-                conditions.append(f"{filter_col} IN ({placeholders})")
-                params.extend(value)
-            else:
-                conditions.append(f"{filter_col} = %s")
+            if dim == "date_from":
+                conditions.append("timestamp >= %s")
                 params.append(value)
+            elif dim == "date_to":
+                conditions.append("timestamp <= %s")
+                params.append(value)
+            elif dim not in VALID_DIMENSIONS:
+                continue
+            else:
+                filter_col = VALID_DIMENSIONS[dim]
+                if isinstance(value, list):
+                    placeholders = ",".join(["%s"] * len(value))
+                    conditions.append(f"{filter_col} IN ({placeholders})")
+                    params.extend(value)
+                else:
+                    conditions.append(f"{filter_col} = %s")
+                    params.append(value)
+    
+    # Bounding box filter
+    bbox_cond, bbox_params = _build_bbox_condition(bbox)
+    if bbox_cond:
+        conditions.append(bbox_cond)
+        params.extend(bbox_params)
     
     where_clause = " AND ".join(conditions)
     
@@ -653,6 +778,7 @@ def execute_flexible_query(
     group_by: Optional[List[str]] = None,
     order_by: Optional[str] = None,
     limit: int = 100,
+    bbox: Optional[Tuple[float, float, float, float]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Execute a flexible analytical query with validation.
@@ -664,6 +790,7 @@ def execute_flexible_query(
         group_by: Columns to group by
         order_by: Order expression (e.g., "count DESC")
         limit: Maximum results
+        bbox: Bounding box tuple (min_lon, min_lat, max_lon, max_lat)
         
     Returns:
         Query results as list of dictionaries
@@ -731,6 +858,12 @@ def execute_flexible_query(
                 conditions.append("timestamp <= %s")
                 params.append(value)
     
+    # Bounding box filter
+    bbox_cond, bbox_params = _build_bbox_condition(bbox)
+    if bbox_cond:
+        conditions.append(bbox_cond)
+        params.extend(bbox_params)
+    
     where_clause = " AND ".join(conditions)
     
     # Build group by
@@ -778,3 +911,101 @@ def execute_flexible_query(
     except Exception as e:
         raise RuntimeError(f"Flexible query failed: {e}")
 
+
+def query_by_bbox(
+    bbox: Tuple[float, float, float, float],
+    categories: Optional[List[str]] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    limit: int = 1000,
+) -> List[Dict[str, Any]]:
+    """
+    Query tickets within a bounding box area.
+    
+    Args:
+        bbox: Bounding box tuple (min_lon, min_lat, max_lon, max_lat)
+        categories: Optional list of categories to filter
+        date_from: Start date filter
+        date_to: End date filter
+        limit: Maximum results
+        
+    Returns:
+        List of ticket dictionaries with coordinates
+    """
+    conditions = ["location IS NOT NULL"]
+    params: List[Any] = []
+    
+    # Bounding box filter
+    bbox_cond, bbox_params = _build_bbox_condition(bbox)
+    if bbox_cond:
+        conditions.append(bbox_cond)
+        params.extend(bbox_params)
+    
+    # Category filter
+    if categories:
+        placeholders = ",".join(["%s"] * len(categories))
+        conditions.append(f"type IN ({placeholders})")
+        params.extend(categories)
+    
+    # Date filters
+    if date_from:
+        conditions.append("timestamp >= %s")
+        params.append(date_from)
+    if date_to:
+        conditions.append("timestamp <= %s")
+        params.append(date_to)
+    
+    where_clause = " AND ".join(conditions)
+    
+    query = f"""
+        SELECT 
+            ticket_id,
+            type,
+            state as status,
+            district,
+            ST_Y(location::geometry) as lat,
+            ST_X(location::geometry) as lon,
+            timestamp,
+            comment as description
+        FROM traffy_tickets
+        WHERE {where_clause}
+        ORDER BY timestamp DESC
+        LIMIT %s
+    """
+    params.append(limit)
+    
+    try:
+        with get_cursor() as cur:
+            cur.execute(query, params)
+            results = []
+            for row in cur.fetchall():
+                item = dict(row)
+                if item.get("timestamp"):
+                    item["timestamp"] = str(item["timestamp"])
+                results.append(item)
+            return results
+    except Exception as e:
+        raise RuntimeError(f"Bounding box query failed: {e}")
+
+
+def get_available_districts() -> List[Dict[str, Any]]:
+    """
+    Get list of all available districts with their counts.
+    
+    Returns:
+        List of {district, count} dictionaries
+    """
+    query = """
+        SELECT district, COUNT(*) as count
+        FROM traffy_tickets
+        WHERE district IS NOT NULL
+        GROUP BY district
+        ORDER BY count DESC
+    """
+    
+    try:
+        with get_cursor() as cur:
+            cur.execute(query)
+            return [dict(row) for row in cur.fetchall()]
+    except Exception as e:
+        raise RuntimeError(f"District list query failed: {e}")
