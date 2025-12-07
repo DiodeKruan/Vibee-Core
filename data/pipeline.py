@@ -1,7 +1,5 @@
 """Data pipeline for cleaning and transforming Traffy Fondue data."""
 
-from typing import List, Optional
-
 import numpy as np
 import pandas as pd
 

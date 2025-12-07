@@ -1,9 +1,10 @@
 """Floating chatbox component rendered with streamlit-float."""
 
+import os
 from html import escape
 
 import streamlit as st
-
+from config.settings import settings
 try:
     from streamlit_float import float_init
 except ImportError:
@@ -13,6 +14,62 @@ except ImportError:
 def _append_message(role: str, content: str) -> None:
     """Store a chat message in session state."""
     st.session_state.chatbox_history.append({"role": role, "content": content})
+
+
+def _get_agent_response(user_message: str) -> str:
+    """
+    Get response from the LangChain agent.
+    
+    Args:
+        user_message: The user's message
+        
+    Returns:
+        The agent's response string
+    """
+    # Check if API key is configured
+    if not settings.gemini.api_key:
+        return (
+            "API key not configured. Please set GOOGLE_API_KEY in your .env file "
+            "to enable the AI assistant."
+        )
+    
+    # Prevent duplicate processing
+    if st.session_state.get("_chatbot_processing", False):
+        return "Already processing a request..."
+    
+    try:
+        st.session_state._chatbot_processing = True
+        
+        from chatbot.agent import invoke_agent_stream
+        
+        # Get chat history for context (excluding the current message)
+        history = st.session_state.get("chatbox_history", [])[:-1]  # Exclude current
+        
+        # Collect streamed response
+        response_chunks = []
+        for chunk in invoke_agent_stream(user_message, history):
+            response_chunks.append(chunk)
+        
+        response = "".join(response_chunks)
+        
+        # Clean up tool call indicators for display
+        response = response.replace("\n[Used ", " [").replace("]\n", "] ")
+        
+        return response.strip() if response.strip() else "I processed your request."
+        
+    except ImportError as e:
+        return f"Chatbot not available: {e}. Please install langchain dependencies."
+    except Exception as e:
+        error_msg = str(e).lower()
+        # Handle rate limit / quota errors gracefully
+        if "429" in str(e) or "quota" in error_msg or "rate" in error_msg:
+            return (
+                "API rate limit reached. Please wait a moment before trying again. "
+                "If this persists, check your Gemini API quota at https://ai.google.dev"
+            )
+        return f"Error: {str(e)}"
+    finally:
+        st.session_state._chatbot_processing = False
 
 
 def render_chatbox() -> None:
@@ -39,7 +96,7 @@ def render_chatbox() -> None:
     messages_html = ""
     history = st.session_state.chatbox_history[-100:]
     if not history:
-        messages_html = '<div class="chatbox-empty">Ask anything — I will echo it here.</div>'
+        messages_html = '<div class="chatbox-empty">Ask about reports, filter data, or change the visualization.</div>'
     else:
         parts = []
         for message in history:
@@ -286,7 +343,7 @@ def render_chatbox() -> None:
 <div class="chatbox-header">
 <div class="chatbox-dot"></div>
 <div class="chatbox-title">Chat Assistant</div>
-<div class="chatbox-subtitle">Powered by Gemini 3.0 Pro</div>
+<div class="chatbox-subtitle">Powered by {' '.join(settings.gemini.model.split('-')).title()}</div>
 </div>
 <div class="chatbox-messages">
 {messages_html}
@@ -310,7 +367,12 @@ def render_chatbox() -> None:
         if submitted and prompt.strip():
             text = prompt.strip()
             _append_message("user", text)
-            _append_message("assistant", f"I'll echo: {text}")
+            
+            # Get response from LangChain agent
+            with st.spinner("Thinking..."):
+                response = _get_agent_response(text)
+            
+            _append_message("assistant", response)
             st.rerun()
 
     chat_container.markdown(

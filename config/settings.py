@@ -21,6 +21,11 @@ class DatabaseConfig:
     min_connections: int = 1
     max_connections: int = 10
 
+@dataclass
+class GeminiConfig:
+    """Gemini API configuration."""
+    model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
+    api_key: str = field(default_factory=lambda: os.getenv("GOOGLE_API_KEY"))
 
 @dataclass
 class MapConfig:
@@ -121,6 +126,7 @@ class Settings:
     db: DatabaseConfig = field(default_factory=DatabaseConfig)
     map: MapConfig = field(default_factory=MapConfig)
     categories: CategoryConfig = field(default_factory=CategoryConfig)
+    gemini: GeminiConfig = field(default_factory=GeminiConfig)
 
     # Cache settings
     cache_ttl_seconds: int = 300  # 5 minutes
